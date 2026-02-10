@@ -8,7 +8,7 @@ import tensorflow as tf
 from tensorflow import keras
 
 # ==========================================================
-# DEFINISI CUSTOM CLASS - PENTING!
+# DEFINISI CUSTOM CLASS
 # ==========================================================
 @keras.saving.register_keras_serializable(package="Custom")
 class PrototypicalNetwork(keras.layers.Layer):
@@ -23,7 +23,6 @@ class PrototypicalNetwork(keras.layers.Layer):
         super(PrototypicalNetwork, self).build(input_shape)
     
     def call(self, inputs, training=None):
-        # Implementasi sederhana - return inputs apa adanya
         return inputs
     
     def compute_output_shape(self, input_shape):
@@ -48,49 +47,74 @@ st.cache_resource.clear()
 st.cache_data.clear()
 
 # ==========================================================
-# LOAD MODEL
+# LOAD MODEL - VERSI DEBUG
 # ==========================================================
 @st.cache_resource(show_spinner=False)
-def load_model_final():
-    model_path = "model_aksen.keras"  # ← NAMA FILE YANG BENAR
+def load_model_debug():
+    model_path = "model_aksen.keras"
+    
+    # CHECK 1: Cek file exists
+    st.sidebar.write("🔍 **Debug Info:**")
+    st.sidebar.write(f"Current directory: {os.getcwd()}")
+    st.sidebar.write(f"Files in directory:")
+    
+    files = os.listdir(".")
+    for f in files:
+        if f.endswith(('.keras', '.h5', '.csv')):
+            st.sidebar.write(f"  ✓ {f}")
     
     if not os.path.exists(model_path):
-        st.sidebar.error(f"❌ File '{model_path}' tidak ditemukan")
+        st.sidebar.error(f"❌ File '{model_path}' TIDAK DITEMUKAN!")
+        st.sidebar.write("📁 Cek apakah nama file benar:")
+        st.sidebar.write("- model_aksen.keras ✓")
+        st.sidebar.write("- model_embedding_aksen.keras")
+        st.sidebar.write("- model.keras")
         return None
+    else:
+        st.sidebar.success(f"✓ File '{model_path}' ditemukan")
+        file_size = os.path.getsize(model_path) / (1024*1024)  # MB
+        st.sidebar.write(f"📦 Size: {file_size:.2f} MB")
     
-    # Custom objects dictionary
+    st.sidebar.divider()
+    
+    # Custom objects
     custom_objects = {
         'PrototypicalNetwork': PrototypicalNetwork
     }
     
-    try:
-        # Method 1: Load dengan custom objects
-        model = keras.models.load_model(
-            model_path,
-            custom_objects=custom_objects,
-            compile=False
-        )
-        st.sidebar.success("✅ Model loaded successfully!")
-        return model
+    # CHECK 2: Try loading methods
+    methods = [
+        ("Method 1: Standard load", 
+         lambda: keras.models.load_model(model_path, custom_objects=custom_objects, compile=False)),
         
-    except Exception as e1:
-        st.sidebar.warning(f"⚠️ Method 1 failed: {str(e1)[:80]}")
+        ("Method 2: safe_mode=False", 
+         lambda: keras.models.load_model(model_path, custom_objects=custom_objects, compile=False, safe_mode=False)),
         
+        ("Method 3: Without custom_objects",
+         lambda: keras.models.load_model(model_path, compile=False, safe_mode=False)),
+    ]
+    
+    for i, (method_name, load_fn) in enumerate(methods, 1):
         try:
-            # Method 2: dengan safe_mode=False
-            model = keras.models.load_model(
-                model_path,
-                custom_objects=custom_objects,
-                compile=False,
-                safe_mode=False
-            )
-            st.sidebar.success("✅ Model loaded (safe_mode=False)")
+            st.sidebar.write(f"🔄 Trying {method_name}...")
+            model = load_fn()
+            st.sidebar.success(f"✅ SUCCESS with {method_name}!")
+            
+            # Show model info
+            st.sidebar.write(f"📊 Model type: {type(model)}")
+            st.sidebar.write(f"📊 Input shape: {model.input_shape}")
+            st.sidebar.write(f"📊 Output shape: {model.output_shape}")
+            
             return model
             
-        except Exception as e2:
-            st.sidebar.error(f"❌ Load failed!")
-            st.sidebar.text(str(e2)[:200])
-            return None
+        except Exception as e:
+            st.sidebar.error(f"❌ {method_name} FAILED")
+            st.sidebar.code(str(e), language="text")
+            st.sidebar.divider()
+            continue
+    
+    st.sidebar.error("❌ SEMUA METODE GAGAL!")
+    return None
 
 # ==========================================================
 # LOAD METADATA
@@ -115,20 +139,13 @@ def predict_accent(audio_path, model):
         return "Model tidak tersedia", None
     
     try:
-        # Load audio
         y, sr = librosa.load(audio_path, sr=16000)
-        
-        # Extract MFCC
         mfcc = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=40)
         mfcc_mean = np.mean(mfcc.T, axis=0)
-        
-        # Prepare input
         X = np.expand_dims(mfcc_mean, axis=0)
         
-        # Predict
         pred = model.predict(X, verbose=0)
         
-        # Classes
         classes = ["Sunda", "Jawa Tengah", "Jawa Timur", "Yogyakarta", "Betawi"]
         idx = np.argmax(pred[0])
         conf = pred[0][idx] * 100
@@ -159,7 +176,7 @@ with st.sidebar:
     st.divider()
 
 # Load resources
-model = load_model_final()
+model = load_model_debug()
 metadata = load_metadata()
 
 if metadata is not None:
@@ -178,18 +195,15 @@ with col1:
         
         if st.button("🚀 Analisis", type="primary", use_container_width=True):
             if model is None:
-                st.error("❌ Model tidak tersedia. Silakan reload halaman.")
+                st.error("❌ Model tidak tersedia. Lihat debug info di sidebar.")
             else:
                 with st.spinner("Menganalisis audio..."):
-                    # Save temporary file
                     with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as f:
                         f.write(audio.getbuffer())
                         temp_path = f.name
                     
-                    # Predict
                     result, probs = predict_accent(temp_path, model)
                     
-                    # Show results
                     with col2:
                         st.subheader("📊 Hasil Prediksi")
                         
@@ -223,7 +237,6 @@ with col1:
                         else:
                             st.info("ℹ️ Metadata tidak tersedia")
                     
-                    # Cleanup
                     try:
                         os.unlink(temp_path)
                     except:
@@ -233,6 +246,5 @@ with col2:
     if not audio:
         st.info("👆 Upload file audio di sebelah kiri untuk memulai")
 
-# Footer
 st.divider()
 st.caption("🎯 Sistem Deteksi Aksen Bahasa Indonesia | Powered by Deep Learning")
