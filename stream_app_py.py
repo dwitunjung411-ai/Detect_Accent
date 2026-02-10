@@ -1,15 +1,10 @@
 import streamlit as st
-import numpy as np
-import pandas as pd
-import librosa
-import tempfile
-import os
 import tensorflow as tf
-from tensorflow.keras.models import load_model
+import os
+import numpy as np
 
-# ==========================================================
-# 1. DEFINISI CLASS PROTOTYPICAL NETWORK
-# ==========================================================
+# 1. DEFINISI CUSTOM CLASS (Wajib sama dengan saat training)
+# Harus didaftarkan agar Keras bisa mengenali layer/model custom
 @tf.keras.utils.register_keras_serializable(package="Custom")
 class PrototypicalNetwork(tf.keras.Model):
     def __init__(self, embedding_model=None, **kwargs):
@@ -26,105 +21,55 @@ class PrototypicalNetwork(tf.keras.Model):
         })
         return config
 
-# ==========================================================
-# 2. FUNGSI LOAD DATA (MODEL & METADATA)
-# ==========================================================
+# 2. FUNGSI LOAD MODEL DENGAN ERROR HANDLING
 @st.cache_resource
 def load_accent_model():
-    print("Sedang mencoba memuat model...") # Ini akan muncul di log Manage App
-    # ... kode load model kamu ...
-    print("Model berhasil dimuat ke memori!")
-    return model
+    # Gunakan path relatif sederhana untuk Streamlit Cloud
+    model_name = "model_aksen.keras"
+    
+    if not os.path.exists(model_name):
+        st.error(f"File {model_name} tidak ditemukan di root directory!")
+        return None
 
-@st.cache_data
-def load_metadata_df():
-    csv_path = "metadata.csv"
-    if os.path.exists(csv_path):
-        return pd.read_csv(csv_path)
-    return None
-
-# ==========================================================
-# 3. FUNGSI PREDIKSI
-# ==========================================================
-def predict_accent(audio_path, model):
-    if model is None: return "Model tidak tersedia"
     try:
-        y, sr = librosa.load(audio_path, sr=16000)
-        mfcc = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=40)
-        mfcc_scaled = np.mean(mfcc.T, axis=0)
-        input_data = np.expand_dims(mfcc_scaled, axis=0)
-
-        prediction = model.predict(input_data)
-        aksen_classes = ["Sunda", "Jawa Tengah", "Jawa Timur", "Yogyakarta", "Betawi"]
-        return aksen_classes[np.argmax(prediction)]
+        # Menyiapkan custom objects untuk Few-Shot Learning
+        custom_objects = {"PrototypicalNetwork": PrototypicalNetwork}
+        model = tf.keras.models.load_model(model_name, custom_objects=custom_objects)
+        return model
     except Exception as e:
-        return f"Error Analisis: {str(e)}"
+        # Menampilkan error spesifik di UI jika loading gagal
+        st.error(f"Gagal memuat model: {str(e)}")
+        return None
 
-# ==========================================================
-# 4. MAIN UI (PENGATURAN LEBAR & PEMBERSIHAN)
-# ==========================================================
-def main():
-    # Menambahkan layout="wide" untuk memperlebar tampilan
-    st.set_page_config(page_title="Deteksi Aksen Prototypical", page_icon="🎙️", layout="wide")
+# 3. SETTING PAGE
+st.set_page_config(page_title="Accent Recognition", layout="wide")
 
-    model_aksen = load_accent_model()
-    df_metadata = load_metadata_df()
+# 4. SIDEBAR STATUS
+st.sidebar.title("⚙️ Status Sistem")
+model = load_accent_model()
 
-    st.title("🎙️ Accent Recognation")
-    st.divider()
+if model is not None:
+    st.sidebar.success("Model: Online")
+else:
+    st.sidebar.error("Model: Offline")
 
-    with st.sidebar:
-        st.header("⚙️ Status Sistem")
-        if model_aksen:
-            st.success("Model: Online")
+# 5. MAIN UI
+st.title("🎙️ Accent Recognition")
+st.write("Aplikasi pendeteksi aksen regional menggunakan Multitask CNN & Few-Shot Learning.")
+
+st.divider()
+
+# Input Audio
+st.subheader("📤 Input Audio")
+uploaded_file = st.file_uploader("Upload file (.wav, .mp3)", type=["wav", "mp3"])
+
+if uploaded_file is not None:
+    st.audio(uploaded_file, format='audio/wav')
+    
+    if st.button("Mulai Prediksi"):
+        if model is not None:
+            with st.spinner('Menganalisis aksen...'):
+                # Tambahkan logika preprocessing audio & prediksi di sini
+                st.info("Fitur prediksi sedang disiapkan.")
         else:
-            st.error("Model: Offline")
-
-    # Mengatur perbandingan kolom (misal 1:1.2 agar kolom hasil lebih lega)
-    col1, col2 = st.columns([1, 1.2])
-
-    with col1:
-        st.subheader("📤 Input Audio")
-        audio_file = st.file_uploader("Upload file (.wav, .mp3)", type=["wav", "mp3"])
-
-        if audio_file:
-            st.audio(audio_file)
-            if st.button("🚀 Extract Feature and  Detect", type="primary", use_container_width=True):
-                if model_aksen:
-                    with st.spinner("Sedang memproses..."):
-                        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
-                            tmp.write(audio_file.getbuffer())
-                            tmp_path = tmp.name
-
-                        # Jalankan fungsi prediksi
-                        hasil_aksen = predict_accent(tmp_path, model_aksen)
-
-                        # Pencarian metadata berdasarkan nama file
-                        user_info = None
-                        if df_metadata is not None:
-                            match = df_metadata[df_metadata['file_name'] == audio_file.name]
-                            if not match.empty:
-                                user_info = match.iloc[0].to_dict()
-
-                        with col2:
-                            st.subheader("📊 Hasil Analisis")
-                            # Box hasil aksen
-                            st.info(f"### Aksen Terdeteksi: **{hasil_aksen}**")
-
-                            st.write("---")
-                            st.subheader("🔹Info Pembicara")
-                            if user_info:
-                                st.write(f"📅Usia: {user_info.get('usia', '-')}")
-                                st.write(f"🗣️Gender: {user_info.get('gender', '-')}")
-                                st.write(f"📍Provinsi: {user_info.get('provinsi', '-')}")
-                            else:
-                                st.warning("Data file ini tidak terdaftar di metadata.csv")
-
-                        # Hapus temporary file
-                        if os.path.exists(tmp_path):
-                            os.unlink(tmp_path)
-                else:
-                    st.error("Model gagal dimuat. Cek log server.")
-
-if __name__ == "__main__":
-    main()
+            st.error("Sistem tidak siap. Periksa status model di sidebar.")
