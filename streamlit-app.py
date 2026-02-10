@@ -1,6 +1,10 @@
+import streamlit as st
 import numpy as np
+import pandas as pd
 import librosa
 import tensorflow as tf
+import tempfile
+import os
 
 # =========================================================
 # 1. PROTOTYPICAL NETWORK
@@ -17,11 +21,9 @@ class PrototypicalNetwork(tf.keras.Model):
         support_labels = inputs["support_labels"]
         n_way = inputs["n_way"]
 
-        # Embedding
         support_embed = self.embedding(support_set)
         query_embed = self.embedding(query_set)
 
-        # Prototype
         prototypes = []
         for i in range(n_way):
             class_embed = tf.boolean_mask(
@@ -31,7 +33,6 @@ class PrototypicalNetwork(tf.keras.Model):
 
         prototypes = tf.stack(prototypes)
 
-        # Distance
         distances = tf.norm(
             tf.expand_dims(query_embed, 1) - prototypes,
             axis=2
@@ -41,28 +42,45 @@ class PrototypicalNetwork(tf.keras.Model):
 
 
 # =========================================================
-# 2. LOAD MODEL (INI LETAK NAMA MODEL)
+# 2. LOAD MODEL (NAMA MODEL ADA DI SINI)
 # =========================================================
 embedding_model = tf.keras.models.load_model(
-    "model_aksen.keras",   # <<< NAMA MODEL
+    "model_aksen.keras",
     compile=False
 )
 
 proto_model = PrototypicalNetwork(embedding_model)
 
+AKSEN_CLASSES = [
+    "Betawi",
+    "Sunda",
+    "Jawa_Tengah",
+    "Jawa_Timur",
+    "Yogyakarta"
+]
+
 
 # =========================================================
-# 3. AUDIO → MFCC
+# 3. LOAD METADATA
+# =========================================================
+@st.cache_data
+def load_metadata():
+    return pd.read_csv("metadata.csv")
+
+metadata_df = load_metadata()
+
+
+# =========================================================
+# 4. AUDIO → MFCC
 # =========================================================
 def extract_mfcc(audio_path, sr=16000, n_mfcc=40):
     y, sr = librosa.load(audio_path, sr=sr)
     mfcc = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=n_mfcc)
-    mfcc = np.mean(mfcc.T, axis=0)
-    return mfcc.astype(np.float32)
+    return np.mean(mfcc.T, axis=0).astype(np.float32)
 
 
 # =========================================================
-# 4. SUPPORT SET (VERSI AMAN - TIDAK ERROR)
+# 5. SUPPORT SET (ANTI ERROR)
 # =========================================================
 def build_support_set(query_feat, n_way):
     support_set = []
@@ -81,44 +99,75 @@ def build_support_set(query_feat, n_way):
 
 
 # =========================================================
-# 5. PREDIKSI AKSEN
+# 6. AMBIL METADATA OTOMATIS
 # =========================================================
-def predict_accent(audio_path):
-    accent_classes = [
-        "Betawi",
-        "Sunda",
-        "Jawa_Tengah",
-        "Jawa_Timur",
-        "Yogyakarta"
-    ]
-    n_way = len(accent_classes)
-
-    # QUERY SET
-    query_feat = extract_mfcc(audio_path)
-    query_set = np.expand_dims(query_feat, axis=0)
-
-    # SUPPORT SET
-    support_set, support_labels = build_support_set(
-        query_feat, n_way
-    )
-
-    inputs = {
-        "support_set": support_set,
-        "query_set": query_set,
-        "support_labels": support_labels,
-        "n_way": n_way
+def get_metadata(filename):
+    row = metadata_df[metadata_df["filename"] == filename]
+    if row.empty:
+        return None
+    return {
+        "usia": row.iloc[0]["usia"],
+        "gender": row.iloc[0]["gender"],
+        "provinsi": row.iloc[0]["provinsi"]
     }
 
-    logits = proto_model(inputs)
-    pred_idx = tf.argmax(logits, axis=1).numpy()[0]
-
-    return accent_classes[pred_idx]
-
 
 # =========================================================
-# 6. MAIN
+# 7. STREAMLIT UI
 # =========================================================
-if __name__ == "__main__":
-    audio_path = "contoh.wav"  # ganti audio kamu
-    hasil = predict_accent(audio_path)
-    print("Prediksi aksen:", hasil)
+st.set_page_config(page_title="Deteksi Aksen", layout="centered")
+st.title("🎙️ Deteksi Aksen, Usia, Gender & Provinsi")
+
+uploaded_file = st.file_uploader(
+    "Upload file audio (.wav)",
+    type=["wav"]
+)
+
+if uploaded_file is not None:
+    st.audio(uploaded_file)
+
+    # ===== SIMPAN AUDIO KE TEMP FILE =====
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
+        tmp.write(uploaded_file.read())
+        temp_audio_path = tmp.name
+
+    try:
+        # ================= METADATA =================
+        st.subheader("📄 Metadata Otomatis")
+        info = get_metadata(uploaded_file.name)
+
+        if info:
+            st.write(f"👤 Usia: **{info['usia']} tahun**")
+            st.write(f"⚧ Gender: **{info['gender']}**")
+            st.write(f"📍 Provinsi: **{info['provinsi']}**")
+        else:
+            st.warning("Metadata tidak ditemukan untuk file ini")
+
+        # ================= AKSEN =================
+        st.subheader("🗣️ Prediksi Aksen")
+
+        query_feat = extract_mfcc(temp_audio_path)
+        query_set = np.expand_dims(query_feat, axis=0)
+
+        support_set, support_labels = build_support_set(
+            query_feat,
+            len(AKSEN_CLASSES)
+        )
+
+        inputs = {
+            "support_set": support_set,
+            "query_set": query_set,
+            "support_labels": support_labels,
+            "n_way": len(AKSEN_CLASSES)
+        }
+
+        logits = proto_model(inputs)
+        pred_idx = tf.argmax(logits, axis=1).numpy()[0]
+
+        st.success(f"**Aksen terdeteksi: {AKSEN_CLASSES[pred_idx]}**")
+
+    except Exception as e:
+        st.error(f"Terjadi error: {e}")
+
+    finally:
+        os.remove(temp_audio_path)
