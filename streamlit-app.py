@@ -4,11 +4,9 @@ import pandas as pd
 import librosa
 import tempfile
 import os
-import tensorflow as tf
-from tensorflow import keras
 
 # ==========================================================
-# DEFINISI CUSTOM CLASS
+# LOAD MODEL PALING SEDERHANA
 # ==========================================================
 @keras.saving.register_keras_serializable(package="Custom")
 class PrototypicalNetwork(keras.layers.Layer):
@@ -39,56 +37,40 @@ class PrototypicalNetwork(keras.layers.Layer):
     @classmethod
     def from_config(cls, config):
         return cls(**config)
-
-# ==========================================================
-# CLEAR CACHE
-# ==========================================================
-st.cache_resource.clear()
-st.cache_data.clear()
-
-# ==========================================================
-# LOAD MODEL - VERSI DEBUG
-# ==========================================================
-@st.cache_resource(show_spinner=False)
-def load_model_debug():
+        
+@st.cache_resource
+def load_accent_model():
+    import tensorflow as tf
+    
     model_path = "model_aksen.keras"
     
-    # CHECK 1: Cek file exists
-    st.sidebar.write("🔍 **Debug Info:**")
-    st.sidebar.write(f"Current directory: {os.getcwd()}")
-    st.sidebar.write(f"Files in directory:")
-    
-    files = os.listdir(".")
-    for f in files:
-        if f.endswith(('.keras', '.h5', '.csv')):
-            st.sidebar.write(f"  ✓ {f}")
-    
+    # Cek file ada atau tidak
     if not os.path.exists(model_path):
-        st.sidebar.write("- model_aksen.keras ✓")
-        st.sidebar.write("- model_aksen.keras")
-        st.sidebar.write("- model.keras")
+        st.sidebar.error(f"❌ File '{model_path}' tidak ditemukan")
         return None
     
-    st.sidebar.divider()
-    
-    # Custom objects
-    custom_objects = {
-        'PrototypicalNetwork': PrototypicalNetwork
-    }
+    try:
+        # Load langsung tanpa apapun
+        model = tf.keras.models.load_model(model_path, compile=False)
+        st.sidebar.success("✅ Model loaded")
+        return model
+    except:
+        try:
+            # Coba dengan safe_mode=False
+            model = tf.keras.models.load_model(model_path, compile=False, safe_mode=False)
+            st.sidebar.success("✅ Model loaded (safe_mode=False)")
+            return model
+        except Exception as e:
+            st.sidebar.error(f"❌ Gagal load: {str(e)[:100]}")
+            return None
 
 # ==========================================================
 # LOAD METADATA
 # ==========================================================
 @st.cache_data
-def load_metadata():
-    try:
-        if os.path.exists("metadata.csv"):
-            df = pd.read_csv("metadata.csv")
-            df = df.dropna(subset=['file_name'])
-            df['file_name'] = df['file_name'].str.strip()
-            return df
-    except Exception as e:
-        st.sidebar.warning(f"⚠️ Metadata error: {str(e)[:100]}")
+def load_metadata_df():
+    if os.path.exists("metadata.csv"):
+        return pd.read_csv("metadata.csv")
     return None
 
 # ==========================================================
@@ -96,27 +78,31 @@ def load_metadata():
 # ==========================================================
 def predict_accent(audio_path, model):
     if model is None:
-        return "Model tidak tersedia", None
+        return "Model tidak tersedia"
     
     try:
+        # Load audio
         y, sr = librosa.load(audio_path, sr=16000)
+        
+        # MFCC
         mfcc = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=40)
         mfcc_mean = np.mean(mfcc.T, axis=0)
+        
+        # Input
         X = np.expand_dims(mfcc_mean, axis=0)
         
+        # Predict
         pred = model.predict(X, verbose=0)
         
+        # Hasil
         classes = ["Sunda", "Jawa Tengah", "Jawa Timur", "Yogyakarta", "Betawi"]
         idx = np.argmax(pred[0])
         conf = pred[0][idx] * 100
         
-        result = f"{classes[idx]} ({conf:.1f}%)"
-        probs = {classes[i]: float(pred[0][i] * 100) for i in range(len(classes))}
-        
-        return result, probs
+        return f"{classes[idx]} ({conf:.1f}%)"
         
     except Exception as e:
-        return f"Error: {str(e)}", None
+        return f"Error: {str(e)}"
 
 # ==========================================================
 # UI
@@ -126,17 +112,12 @@ st.set_page_config(page_title="Deteksi Aksen", page_icon="🎙️", layout="wide
 st.title("🎙️ Deteksi Aksen Indonesia")
 st.divider()
 
+# Load
+model = load_accent_model()
+metadata = load_metadata_df()
 
-
-# Load resources
-model = load_model_debug()
-metadata = load_metadata()
-
-if metadata is not None:
-    st.sidebar.info(f"📊 {len(metadata)} metadata loaded")
-
-# Main layout
-col1, col2 = st.columns(2)
+# Layout
+col1, col2 = st.columns([1, 1])
 
 with col1:
     st.subheader("📥 Input Audio")
@@ -147,60 +128,33 @@ with col1:
         st.audio(audio)
         
         if st.button("🚀 Analisis", type="primary", use_container_width=True):
-            if model is None:
-                st.error("❌ Model tidak tersedia. Lihat debug info di sidebar.")
-            else:
-                with st.spinner("Menganalisis audio..."):
+            if model:
+                with st.spinner("Analyzing..."):
+                    # Save temp
                     with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as f:
                         f.write(audio.getbuffer())
-                        temp_path = f.name
+                        path = f.name
                     
-                    result, probs = predict_accent(temp_path, model)
+                    # Predict
+                    result = predict_accent(path, model)
                     
+                    # Show
                     with col2:
-                        st.subheader("📊 Hasil Prediksi")
-                        
-                        if "Error" in result:
-                            st.error(result)
-                        else:
-                            st.success(f"**{result}**")
-                            
-                            if probs:
-                                st.write("**Detail Confidence:**")
-                                for name, prob in sorted(probs.items(), key=lambda x: x[1], reverse=True):
-                                    st.progress(prob/100, text=f"{name}: {prob:.1f}%")
+                        st.subheader("📊 Hasil")
+                        st.success(result)
                         
                         st.divider()
-                        st.subheader("📋 Info Speaker")
                         
+                        # Metadata
                         if metadata is not None:
                             match = metadata[metadata['file_name'] == audio.name]
                             if not match.empty:
                                 info = match.iloc[0]
-                                
-                                c1, c2 = st.columns(2)
-                                with c1:
-                                    st.metric("Usia", f"{info['usia']} Tahun")
-                                    st.metric("Gender", info['gender'])
-                                with c2:
-                                    st.metric("Provinsi", info['provinsi'])
-                                    st.metric("Label Aksen", info['label_aksen'])
-                            else:
-                                st.info("ℹ️ Data tidak ditemukan untuk file ini")
-                        else:
-                            st.info("ℹ️ Metadata tidak tersedia")
+                                st.write(f"🎂 Usia: {info.get('usia', '-')} Tahun")
+                                st.write(f"🚻 Gender: {info.get('gender', '-')}")
+                                st.write(f"🗺️ Provinsi: {info.get('provinsi', '-')}")
                     
-                    try:
-                        os.unlink(temp_path)
-                    except:
-                        pass
-
-with col2:
-    if not audio:
-        st.info("👆 Upload file audio di sebelah kiri untuk memulai")
-
-st.divider()
-st.caption("🎯 Sistem Deteksi Aksen Bahasa Indonesia | Powered by Deep Learning")
-
-
-
+                    # Cleanup
+                    os.unlink(path)
+            else:
+                st.error("Model tidak tersedia")
