@@ -6,12 +6,6 @@ import tempfile
 import os
 
 # ==========================================================
-# PAKSA CLEAR CACHE - HAPUS SETELAH BERHASIL
-# ==========================================================
-st.cache_resource.clear()
-st.cache_data.clear()
-
-# ==========================================================
 # LOAD MODEL DENGAN MULTIPLE FALLBACK
 # ==========================================================
 @st.cache_resource(show_spinner=False)
@@ -185,3 +179,4 @@ with col1:
 with col2:
     if not audio:
         st.info("👆 Upload file audio di sebelah kiri untuk memulai")
+
