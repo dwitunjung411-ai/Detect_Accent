@@ -4,6 +4,13 @@ import pandas as pd
 import librosa
 import tempfile
 import os
+
+# ==========================================================
+# PAKSA CLEAR CACHE - HAPUS SETELAH BERHASIL
+# ==========================================================
+st.cache_resource.clear()
+st.cache_data.clear()
+
 # ==========================================================
 # LOAD MODEL DENGAN MULTIPLE FALLBACK
 # ==========================================================
@@ -11,7 +18,7 @@ import os
 def load_accent_model_v2():
     import tensorflow as tf
     
-    model_path = "model_aksen.keras"
+    model_path = "model_embedding_aksen.keras"
     
     # Cek file ada atau tidak
     if not os.path.exists(model_path):
@@ -102,6 +109,14 @@ st.set_page_config(page_title="Deteksi Aksen", page_icon="🎙️", layout="wide
 st.title("🎙️ Deteksi Aksen Indonesia")
 st.divider()
 
+# Sidebar - Clear Cache Button
+with st.sidebar:
+    st.header("⚙️ Pengaturan")
+    if st.button("🔄 Clear Cache & Reload", use_container_width=True):
+        st.cache_resource.clear()
+        st.cache_data.clear()
+        st.rerun()
+    st.divider()
 
 # Load
 model = load_accent_model_v2()
