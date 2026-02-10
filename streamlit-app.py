@@ -7,7 +7,7 @@ import os
 import tensorflow as tf
 
 # ==========================================================
-# 1. DEFINISI CLASS PROTOTYPICAL NETWORK
+# 1. DEFINISI CLASS (Pastikan konsisten dengan saat training)
 # ==========================================================
 @tf.keras.utils.register_keras_serializable(package="Custom")
 class PrototypicalNetwork(tf.keras.Model):
@@ -16,66 +16,67 @@ class PrototypicalNetwork(tf.keras.Model):
         self.embedding = embedding_model
 
     def call(self, support_set, query_set, support_labels, n_way):
-        # Memastikan embedding dipanggil dengan query_set
+        # Sesuai logika skripsi Anda
         return self.embedding(query_set)
 
 # ==========================================================
-# 2. FUNGSI LOAD MODEL & METADATA
-# ==========================================================
-@st.cache_resource
-def load_accent_model():
-    try:
-        custom_objects = {"PrototypicalNetwork": PrototypicalNetwork}
-        model = tf.keras.models.load_model("model_aksen.keras", custom_objects=custom_objects, compile=False)
-        return model
-    except: return None
-
-@st.cache_data
-def load_metadata_df():
-    if os.path.exists("metadata.csv"):
-        return pd.read_csv("metadata.csv")
-    return None
-
-# ==========================================================
-# 3. FUNGSI PREDIKSI (FIXED ARGUMENTS)
+# 2. FUNGSI PREDIKSI (Sesuai parameter di image_2a56fe.png)
 # ==========================================================
 def predict_accent(audio_path, model):
-    if model is None: return "Model Error"
+    if model is None: return "Model tidak terbaca"
     try:
+        # Ekstraksi fitur kueri
         y, sr = librosa.load(audio_path, sr=16000)
         mfcc = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=40)
         mfcc_scaled = np.mean(mfcc.T, axis=0)
         
+        # Sesuai gambar: konversi ke tensor float32
         query_tensor = tf.convert_to_tensor([mfcc_scaled], dtype=tf.float32)
-        
-        # Sesuai foto: Menyiapkan support set (5-way, 3-shot)
+
+        # Menyiapkan support set (Gunakan data dummy agar call tidak error)
         n_way = 5
         k_shot = 3
         support_tensor = tf.random.normal((n_way * k_shot, 40))
-        support_labels = tf.constant(np.repeat(range(n_way), k_shot), dtype=tf.int32)
+        support_labels_tensor = tf.constant(np.repeat(range(n_way), k_shot), dtype=tf.int32)
 
-        # Memanggil .call secara eksplisit untuk menghindari TrackedDict
-        logits = model.call(support_tensor, query_tensor, support_labels, n_way)
-        
+        # Mencegah 'TrackedDict' error dengan memanggil .call secara eksplisit
+        # Mengikuti urutan argumen di gambar: support, query, labels, n_way
+        logits = model.call(
+            support_tensor, 
+            query_tensor, 
+            support_labels_tensor, 
+            n_way
+        )
+
         aksen_classes = ["Sunda", "Jawa Tengah", "Jawa Timur", "Yogyakarta", "Betawi"]
         prediction_idx = np.argmax(logits.numpy() if hasattr(logits, 'numpy') else logits)
         return aksen_classes[prediction_idx % n_way]
     except Exception as e:
-        return f"Error Analisis: {str(e)}"
+        return f"Gagal Deteksi Aksen: {str(e)}"
 
 # ==========================================================
-# 4. MAIN UI (PERBAIKAN LAYOUT)
+# 3. MAIN UI (PERBAIKAN LOGIKA INFO PEMBICARA)
 # ==========================================================
 def main():
     st.set_page_config(page_title="Deteksi Aksen Prototypical", layout="wide")
     
-    model_aksen = load_accent_model()
-    df_metadata = load_metadata_df()
+    # Load Resources
+    @st.cache_resource
+    def load_resources():
+        model = None
+        try:
+            model = tf.keras.models.load_model("model_aksen.keras", 
+                                             custom_objects={"PrototypicalNetwork": PrototypicalNetwork},
+                                             compile=False)
+        except: pass
+        df = pd.read_csv("metadata.csv") if os.path.exists("metadata.csv") else None
+        return model, df
 
-    st.title("🎙️ Sistem Deteksi Aksen Prototypical Indonesia")
+    model_aksen, df_metadata = load_resources()
+
+    st.title("🎙️ Sistem Deteksi Aksen Indonesia")
     st.divider()
 
-    # Layout utama dibagi menjadi dua kolom besar
     col1, col2 = st.columns([1, 1.2])
 
     with col1:
@@ -85,49 +86,50 @@ def main():
         if audio_file:
             st.audio(audio_file)
             
-            # Pemicu Deteksi
+            # Eksekusi Deteksi saat tombol diklik
             if st.button("🚀 Extract Feature and Detect"):
-                with st.spinner("Menganalisis..."):
+                with st.spinner("Menganalisis aksen..."):
                     with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
                         tmp.write(audio_file.getbuffer())
                         tmp_path = tmp.name
-
-                    # Jalankan Prediksi Aksen
-                    hasil_aksen = predict_accent(tmp_path, model_aksen)
                     
-                    # Simpan hasil ke session state agar tidak hilang saat UI refresh
-                    st.session_state['hasil_aksen'] = hasil_aksen
+                    # Simpan hasil ke session_state agar tidak hilang saat UI refresh
+                    st.session_state['hasil_aksen'] = predict_accent(tmp_path, model_aksen)
                     os.unlink(tmp_path)
 
-    # Kolom Kanan: Menampilkan Hasil & Info Pembicara
     with col2:
         st.subheader("📊 Hasil Analisis")
         
-        # 1. Box Hasil Aksen
+        # BAGIAN AKSEN
         with st.container(border=True):
             st.markdown("#### 🎭 Aksen Terdeteksi:")
             if 'hasil_aksen' in st.session_state:
-                st.info(f"**{st.session_state['hasil_aksen']}**")
+                if "Gagal" in st.session_state['hasil_aksen']:
+                    st.error(st.session_state['hasil_aksen'])
+                else:
+                    st.info(f"**{st.session_state['hasil_aksen']}**")
             else:
-                st.write("Silakan klik tombol deteksi di sebelah kiri.")
+                st.write("Menunggu deteksi...")
 
         st.divider()
-        
-        # 2. Box Info Pembicara (Usia, Gender, Provinsi)
+
+        # BAGIAN INFO PEMBICARA (Tetap muncul jika file diupload, meski model error)
         st.subheader("💎 Info Pembicara")
         if audio_file and df_metadata is not None:
-            # Cari data berdasarkan nama file yang diupload
-            match = df_metadata[df_metadata['file_name'] == audio_file.name]
+            # Mencari data pembicara berdasarkan nama file
+            user_data = df_metadata[df_metadata['file_name'] == audio_file.name]
             
-            if not match.empty:
-                user_info = match.iloc[0]
-                st.markdown(f"🎂 **Usia:** {user_info.get('usia', '-')} Tahun")
-                st.markdown(f"🚻 **Gender:** {user_info.get('gender', '-')}")
-                st.markdown(f"🗺️ **Provinsi:** {user_info.get('provinsi', '-')}")
+            if not user_data.empty:
+                info = user_data.iloc[0]
+                st.markdown(f"🎂 **Usia:** {info.get('usia', '-')} Tahun")
+                st.markdown(f"🚻 **Gender:** {info.get('gender', '-')}")
+                st.markdown(f"🗺️ **Provinsi:** {info.get('provinsi', '-')}")
             else:
-                st.warning("🕵️ Data file tidak terdaftar di metadata.csv")
+                st.warning("Data pembicara tidak ditemukan di metadata.csv")
+        elif audio_file:
+            st.error("File metadata.csv tidak ditemukan.")
         else:
-            st.info("Upload file untuk melihat info pembicara.")
+            st.caption("Silakan upload file untuk melihat informasi.")
 
 if __name__ == "__main__":
     main()
