@@ -27,9 +27,10 @@ class PrototypicalNetwork(tf.keras.Model):
 
 @st.cache_resource
 def load_accent_model():
-    import tensorflow as tf
-    
-    model_path = "model_aksen.keras"
+   model = tf.keras.models.load_model(
+    "model_aksen.keras",
+    compile=False
+)
     
     # Cek file ada atau tidak
     if not os.path.exists(model_path):
@@ -145,5 +146,6 @@ with col1:
                     os.unlink(path)
             else:
                 st.error("Model tidak tersedia")
+
 
 
