@@ -52,7 +52,7 @@ st.cache_data.clear()
 @st.cache_resource(show_spinner=False)
 def load_model():
     # Cari file model otomatis
-    possible_names = ["model_aksen.keras", "model_embedding_aksen.keras", "model.keras"]
+    possible_names = ["model_aksen.keras"]
     model_path = None
     
     for name in possible_names:
@@ -220,3 +220,4 @@ with col2:
 
 st.divider()
 st.caption("🎯 Sistem Deteksi Aksen Bahasa Indonesia | Powered by Deep Learning")
+
