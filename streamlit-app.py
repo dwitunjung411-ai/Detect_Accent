@@ -123,9 +123,12 @@ def main():
         if audio_file:
             st.audio(audio_file)
             # Tombol diperlebar agar proporsional
-            if st.button(
-                "🚀 Extract Feature and Detect", type="primary", use_container_width=True
-            ):
+            # Contoh perbaikan pada pemanggilan model
+if st.button("🚀 Extract Feature and Detect"):
+    
+    query_features = extract_mfcc(uploaded_file) 
+    query_labels_tensor = torch.from_numpy(query_features).float().unsqueeze(0) 
+    output = model(support_labels, query_labels) # Sesuaikan dengan nama variabel di kode Anda
                 if model_aksen:
                     with st.spinner("Menganalisis karakteristik suara..."):
                         with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
@@ -165,3 +168,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
