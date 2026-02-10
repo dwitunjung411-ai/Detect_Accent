@@ -21,11 +21,11 @@ MAX_LEN = 174
 N_FFT = 2048
 HOP_LENGTH = 512
 
-# Nama file yang diharapkan (sesuaikan jika berbeda)
+# Nama file yang diharapkan
 EMBEDDING_MODEL_KERAS = "model_aksen.keras"
 PREPROCESS_FILE = "preprocess.joblib"
 
-# Batas UI agar tidak terlalu berat di Streamlit Cloud
+# Batas UI
 MAX_N_WAY = 5
 MAX_K_SHOT = 5
 
@@ -35,12 +35,13 @@ MAX_K_SHOT = 5
 # =========================================================
 def build_embedding_model(input_shape):
     """
-    Mengikuti versi yang digunakan di notebook (lebih ringkas):
-    Conv2D(128) -> MaxPool -> GAP -> Dense(256) -> Dropout -> Dense(128)
+    Build simple CNN embedding model
     """
     model = tf.keras.Sequential([
         layers.Input(shape=input_shape),
-        layers.Conv2D(128, (3, 3), activation="relu"),
+        layers.Conv2D(128, (3, 3), activation="relu", padding="same"),
+        layers.MaxPooling2D((2, 2)),
+        layers.Conv2D(64, (3, 3), activation="relu", padding="same"),
         layers.MaxPooling2D((2, 2)),
         layers.GlobalAveragePooling2D(),
         layers.Dense(256, activation="relu"),
@@ -52,32 +53,28 @@ def build_embedding_model(input_shape):
 
 @st.cache_resource
 def load_preprocess():
-    """Load preprocessing objects (scaler, encoder)"""
+    """Load preprocessing objects"""
     p = Path(PREPROCESS_FILE)
     if not p.exists():
         return None
     
     try:
         obj = joblib.load(p)
-        # Validasi minimal
         if "scaler_usia" not in obj or "ohe" not in obj:
-            st.warning("preprocess.joblib tidak lengkap (scaler_usia/ohe missing)")
+            st.sidebar.warning("⚠️ preprocess.joblib tidak lengkap")
             return None
         return obj
     except Exception as e:
-        st.warning(f"Error loading preprocess.joblib: {e}")
+        st.sidebar.warning(f"⚠️ Error loading preprocess: {e}")
         return None
 
 
 @st.cache_resource
 def load_embedding_model(expected_input_shape, uploaded_model=None):
     """
-    Load embedding model dengan 3 opsi:
-    1. Model yang diupload via UI
-    2. Model lokal (model_aksen.keras)
-    3. Build model baru (fallback jika tidak ada model)
+    Load embedding model dengan multiple fallback
     """
-    # Opsi 1: Model yang diupload
+    # Opsi 1: Uploaded model
     if uploaded_model is not None:
         try:
             import tempfile
@@ -86,13 +83,13 @@ def load_embedding_model(expected_input_shape, uploaded_model=None):
                 tmp_path = tmp.name
             
             model = tf.keras.models.load_model(tmp_path, compile=False)
-            Path(tmp_path).unlink()  # cleanup
-            st.sidebar.success("✅ Model uploaded berhasil dimuat")
+            Path(tmp_path).unlink()
+            st.sidebar.success("✅ Model uploaded dimuat")
             return model
         except Exception as e:
-            st.sidebar.error(f"❌ Error loading uploaded model: {e}")
+            st.sidebar.error(f"❌ Error upload model: {str(e)[:100]}")
     
-    # Opsi 2: Model lokal
+    # Opsi 2: Local model
     p_model = Path(EMBEDDING_MODEL_KERAS)
     if p_model.exists():
         try:
@@ -100,13 +97,13 @@ def load_embedding_model(expected_input_shape, uploaded_model=None):
             st.sidebar.success(f"✅ Model dimuat dari {EMBEDDING_MODEL_KERAS}")
             return model
         except Exception as e:
-            st.sidebar.warning(f"⚠️ Error loading {EMBEDDING_MODEL_KERAS}: {e}")
+            st.sidebar.warning(f"⚠️ Error load {EMBEDDING_MODEL_KERAS}: {str(e)[:100]}")
     
-    # Opsi 3: Build model baru (fallback)
-    st.sidebar.warning("⚠️ Model tidak ditemukan, membuat model baru (belum terlatih)")
+    # Opsi 3: Build new model
+    st.sidebar.warning("⚠️ Model tidak ada, membuat model baru (belum terlatih)")
     model = build_embedding_model(expected_input_shape)
     
-    # Build weights dengan dummy data
+    # Initialize weights
     dummy = tf.zeros((1, *expected_input_shape), dtype=tf.float32)
     _ = model(dummy, training=False)
     
@@ -114,13 +111,10 @@ def load_embedding_model(expected_input_shape, uploaded_model=None):
 
 
 # =========================================================
-# AUDIO + FEATURE EXTRACTION
+# AUDIO PROCESSING
 # =========================================================
 def load_audio_from_upload(uploaded_file, target_sr=SR_DEFAULT):
-    """
-    Load audio dari upload (wav/mp3/ogg/flac).
-    Output: mono float32, sr=target_sr
-    """
+    """Load audio from uploaded file"""
     raw = uploaded_file.read()
     try:
         y, sr = sf.read(io.BytesIO(raw), dtype="float32", always_2d=False)
@@ -135,9 +129,9 @@ def load_audio_from_upload(uploaded_file, target_sr=SR_DEFAULT):
         return y.astype(np.float32), sr
 
 
-def extract_mfcc_like_notebook(y, sr=SR_DEFAULT, n_mfcc=N_MFCC, max_len=MAX_LEN):
+def extract_mfcc_features(y, sr=SR_DEFAULT, n_mfcc=N_MFCC, max_len=MAX_LEN):
     """
-    Ekstraksi MFCC + delta + delta2
+    Extract MFCC + delta + delta2
     Output: (40, 174, 3)
     """
     y = librosa.util.normalize(y)
@@ -146,7 +140,7 @@ def extract_mfcc_like_notebook(y, sr=SR_DEFAULT, n_mfcc=N_MFCC, max_len=MAX_LEN)
     delta = librosa.feature.delta(mfcc)
     delta2 = librosa.feature.delta(mfcc, order=2)
 
-    # Pad atau truncate
+    # Pad or truncate
     if mfcc.shape[1] < max_len:
         pad_width = max_len - mfcc.shape[1]
         mfcc = np.pad(mfcc, ((0, 0), (0, pad_width)), mode="constant")
@@ -158,15 +152,13 @@ def extract_mfcc_like_notebook(y, sr=SR_DEFAULT, n_mfcc=N_MFCC, max_len=MAX_LEN)
         delta2 = delta2[:, :max_len]
 
     features = np.stack([mfcc, delta, delta2], axis=-1).astype(np.float32)
-    return features  # (40, 174, 3)
+    return features
 
 
-def build_x_final(audio_feat_40_174_3, preprocess_obj, usia, gender, provinsi):
-    """
-    Gabungkan audio features dengan metadata
-    """
+def add_metadata(audio_feat, preprocess_obj, usia, gender, provinsi):
+    """Add metadata to audio features"""
     if preprocess_obj is None:
-        return audio_feat_40_174_3
+        return audio_feat
 
     try:
         scaler_usia = preprocess_obj["scaler_usia"]
@@ -181,44 +173,71 @@ def build_x_final(audio_feat_40_174_3, preprocess_obj, usia, gender, provinsi):
         X_meta_broadcast = np.repeat(X_meta[:, np.newaxis, np.newaxis, :], N_MFCC, axis=1)
         X_meta_broadcast = np.repeat(X_meta_broadcast, MAX_LEN, axis=2)
 
-        X_audio = audio_feat_40_174_3[np.newaxis, ...]
+        X_audio = audio_feat[np.newaxis, ...]
         X_final = np.concatenate([X_audio, X_meta_broadcast], axis=-1).astype(np.float32)
 
         return X_final[0]
     except Exception as e:
-        st.warning(f"Error processing metadata: {e}. Using audio only.")
-        return audio_feat_40_174_3
+        st.warning(f"⚠️ Metadata error: {e}. Using audio only.")
+        return audio_feat
 
 
 # =========================================================
-# PROTOTYPICAL INFERENCE
+# PROTOTYPICAL NETWORK
 # =========================================================
-def prototypical_predict(embedding_model, support_x, support_y, query_x, class_names):
+def compute_prototypes(embeddings, labels, n_classes):
+    """Compute prototype (mean) for each class"""
+    prototypes = []
+    for c in range(n_classes):
+        mask = (labels == c)
+        if not np.any(mask):
+            raise ValueError(f"No support examples for class {c}")
+        class_embeddings = embeddings[mask]
+        prototype = class_embeddings.mean(axis=0)
+        prototypes.append(prototype)
+    return np.stack(prototypes, axis=0)
+
+
+def euclidean_distance(x, y):
+    """Compute Euclidean distance between x and y"""
+    # x: (N, D), y: (M, D)
+    # output: (N, M)
+    return np.linalg.norm(x[:, None, :] - y[None, :, :], axis=-1)
+
+
+def prototypical_predict(model, support_x, support_y, query_x, n_classes):
     """
     Prototypical Network prediction
+    
+    Args:
+        model: Embedding model
+        support_x: Support features (Ns, H, W, C)
+        support_y: Support labels (Ns,)
+        query_x: Query features (Nq, H, W, C)
+        n_classes: Number of classes
+    
+    Returns:
+        probs: (Nq, n_classes)
+        pred_idx: (Nq,)
     """
     # Get embeddings
-    sup_emb = embedding_model(support_x, training=False).numpy()
-    qry_emb = embedding_model(query_x, training=False).numpy()
-
-    n_way = len(class_names)
-    prototypes = []
+    support_embeddings = model(support_x, training=False).numpy()
+    query_embeddings = model(query_x, training=False).numpy()
     
-    for c in range(n_way):
-        mask = (support_y == c)
-        if not np.any(mask):
-            raise ValueError(f"Tidak ada support untuk class index {c}.")
-        prototypes.append(sup_emb[mask].mean(axis=0))
+    # Compute prototypes
+    prototypes = compute_prototypes(support_embeddings, support_y, n_classes)
     
-    prototypes = np.stack(prototypes, axis=0)
-
-    # Euclidean distance -> logits
-    dists = np.linalg.norm(qry_emb[:, None, :] - prototypes[None, :, :], axis=-1)
-    logits = -dists
-
+    # Compute distances
+    distances = euclidean_distance(query_embeddings, prototypes)
+    
+    # Convert to logits (negative distance)
+    logits = -distances
+    
     # Softmax
-    exp = np.exp(logits - logits.max(axis=1, keepdims=True))
-    probs = exp / exp.sum(axis=1, keepdims=True)
+    exp_logits = np.exp(logits - logits.max(axis=1, keepdims=True))
+    probs = exp_logits / exp_logits.sum(axis=1, keepdims=True)
+    
+    # Predictions
     pred_idx = probs.argmax(axis=1)
     
     return probs, pred_idx
@@ -227,26 +246,25 @@ def prototypical_predict(embedding_model, support_x, support_y, query_x, class_n
 # =========================================================
 # UI
 # =========================================================
-st.title("🎙️ Accent Recognition (Few-Shot Learning)")
-st.caption("Pipeline: MFCC+delta+delta2 → Embedding CNN → Prototypical Network")
+st.title("🎙️ Few-Shot Accent Recognition")
+st.caption("Prototypical Network untuk deteksi aksen dari sedikit contoh")
 
-# Sidebar - Settings
+# Sidebar
 with st.sidebar:
-    st.header("⚙️ Model & Preprocessing")
+    st.header("⚙️ Model")
     
-    # Upload model option
     uploaded_model = st.file_uploader(
         "Upload Model (.keras)", 
         type=["keras"],
-        help="Upload model jika tidak tersedia di folder"
+        help="Optional: upload jika tidak ada di folder"
     )
     
     st.divider()
+    st.header("📊 Episode Config")
     
-    st.header("📊 Episode Settings")
-    n_way = st.slider("Jumlah kelas (n_way)", 2, MAX_N_WAY, 5)
-    k_shot = st.slider("Contoh per kelas (k_shot)", 1, MAX_K_SHOT, 3)
-    q_query = st.slider("Jumlah query audio", 1, 10, 1)
+    n_way = st.slider("Jumlah kelas (n-way)", 2, MAX_N_WAY, 3)
+    k_shot = st.slider("Contoh per kelas (k-shot)", 1, MAX_K_SHOT, 2)
+    q_query = st.slider("Jumlah query", 1, 5, 1)
 
 # Load preprocessing
 preprocess = load_preprocess()
@@ -256,228 +274,191 @@ with st.sidebar:
     st.header("🧾 Metadata")
     
     if preprocess is None:
-        st.info("preprocess.joblib tidak ditemukan. Hanya menggunakan audio features.")
+        st.info("💡 Tidak pakai metadata (audio only)")
         use_meta = False
     else:
-        use_meta = st.checkbox("Gunakan metadata", value=True)
+        use_meta = st.checkbox("Gunakan metadata", value=False)
         
         if use_meta:
-            # Get categories if available
-            gender_options = preprocess.get("gender_categories", ["L", "P"])
-            prov_options = preprocess.get("provinsi_categories", ["Unknown"])
+            gender_opts = preprocess.get("gender_categories", ["L", "P"])
+            prov_opts = preprocess.get("provinsi_categories", ["Unknown"])
 
 # Main UI
-st.subheader("1️⃣ Support Set (k-shot per kelas)")
-st.write(f"Upload **{k_shot}** contoh audio untuk setiap kelas")
+st.subheader("1️⃣ Support Set")
+st.write(f"Upload **{k_shot}** audio untuk setiap kelas")
 
-support_files = []
-support_labels = []
+support_data = []
 class_names = []
-class_meta = []
 
 cols = st.columns(n_way)
 for c in range(n_way):
     with cols[c]:
         cname = st.text_input(
-            f"Nama Kelas #{c+1}", 
-            value=f"Kelas_{c+1}", 
-            key=f"cname_{c}"
+            f"Kelas #{c+1}", 
+            value=f"Aksen_{c+1}", 
+            key=f"cn_{c}"
         )
         class_names.append(cname)
 
-        # Metadata untuk kelas ini
-        if preprocess is not None and use_meta:
-            usia_c = st.number_input(
-                "Usia", 
-                min_value=0, 
-                max_value=100, 
-                value=25, 
-                step=1, 
-                key=f"usia_{c}"
-            )
-            
-            gender_c = st.selectbox(
-                "Gender", 
-                gender_options, 
-                key=f"gender_{c}"
-            )
-            
-            prov_c = st.selectbox(
-                "Provinsi", 
-                prov_options, 
-                key=f"prov_{c}"
-            )
-            
-            class_meta.append((usia_c, gender_c, prov_c))
+        # Metadata per kelas
+        if use_meta:
+            usia = st.number_input("Usia", 18, 80, 25, key=f"u_{c}")
+            gender = st.selectbox("Gender", gender_opts, key=f"g_{c}")
+            prov = st.selectbox("Provinsi", prov_opts, key=f"p_{c}")
+            meta = (usia, gender, prov)
         else:
-            class_meta.append((None, None, None))
+            meta = None
 
-        # Upload files
         files = st.file_uploader(
-            f"Audio ({cname})",
-            type=["wav", "mp3", "ogg", "flac"],
+            f"Audio {cname}",
+            type=["wav", "mp3"],
             accept_multiple_files=True,
-            key=f"support_{c}",
+            key=f"sup_{c}",
         )
 
         if files:
             files = files[:k_shot]
             for f in files:
-                support_files.append((c, f))
-                support_labels.append(c)
-            
-            st.caption(f"✅ {len(files)}/{k_shot} files uploaded")
+                support_data.append({
+                    'class_idx': c,
+                    'file': f,
+                    'meta': meta
+                })
+            st.caption(f"✅ {len(files)}/{k_shot}")
 
 st.divider()
-
 st.subheader("2️⃣ Query Set")
-st.write(f"Upload **{q_query}** audio untuk diprediksi")
 
 query_files = st.file_uploader(
-    "Audio Query",
-    type=["wav", "mp3", "ogg", "flac"],
+    f"Upload {q_query} audio query",
+    type=["wav", "mp3"],
     accept_multiple_files=True,
-    key="query_upload"
+    key="query"
 )
 
 if query_files:
     query_files = query_files[:q_query]
-    st.caption(f"✅ {len(query_files)} query files uploaded")
+    st.caption(f"✅ {len(query_files)} query")
 
-# Query metadata (jika pakai metadata)
-query_meta = None
-if preprocess is not None and use_meta:
-    st.subheader("🧾 Metadata Query")
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        usia_q = st.number_input("Usia Query", 0, 100, 25, 1)
-    with col2:
-        gender_q = st.selectbox("Gender Query", gender_options)
-    with col3:
-        prov_q = st.selectbox("Provinsi Query", prov_options)
-    
-    query_meta = (usia_q, gender_q, prov_q)
+# Query metadata
+if use_meta and query_files:
+    st.write("**Metadata Query:**")
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        q_usia = st.number_input("Usia", 18, 80, 25, key="q_u")
+    with c2:
+        q_gender = st.selectbox("Gender", gender_opts, key="q_g")
+    with c3:
+        q_prov = st.selectbox("Provinsi", prov_opts, key="q_p")
+    query_meta = (q_usia, q_gender, q_prov)
+else:
+    query_meta = None
 
 st.divider()
 
-# Run prediction
-run = st.button("🔍 Jalankan Prediksi Few-Shot", type="primary", use_container_width=True)
-
-if run:
-    # Validasi
-    expected_support = n_way * k_shot
-    if len(support_files) < expected_support:
-        st.error(f"❌ Support belum lengkap. Dibutuhkan {expected_support} files, saat ini: {len(support_files)}")
+# Predict button
+if st.button("🔍 Jalankan Prediksi", type="primary", use_container_width=True):
+    
+    # Validations
+    if len(support_data) < n_way * k_shot:
+        st.error(f"❌ Support tidak lengkap: {len(support_data)}/{n_way*k_shot}")
         st.stop()
     
     if not query_files:
-        st.error("❌ Query audio belum diupload")
+        st.error("❌ Upload query audio dulu")
         st.stop()
-
-    # Tentukan input shape
-    if preprocess is not None and use_meta:
-        scaler_usia = preprocess["scaler_usia"]
+    
+    # Determine input shape
+    if use_meta and preprocess:
+        scaler = preprocess["scaler_usia"]
         ohe = preprocess["ohe"]
-        dummy_usia = scaler_usia.transform(np.array([[25.0]], dtype=np.float32))
-        dummy_cat = ohe.transform(np.array([["L", "Unknown"]], dtype=object))
-        meta_dim = np.hstack([dummy_usia, dummy_cat]).shape[1]
+        dum_u = scaler.transform([[25.0]])
+        dum_c = ohe.transform([["L", "Unknown"]])
+        meta_dim = np.hstack([dum_u, dum_c]).shape[1]
         channels = 3 + meta_dim
     else:
         channels = 3
-
-    expected_shape = (N_MFCC, MAX_LEN, channels)
-
+    
+    input_shape = (N_MFCC, MAX_LEN, channels)
+    
     # Load model
     with st.spinner("⏳ Loading model..."):
-        try:
-            emb_model = load_embedding_model(expected_shape, uploaded_model)
-        except Exception as e:
-            st.error(f"❌ Error loading model: {e}")
-            st.stop()
-
-    # Process support set
-    with st.spinner("⏳ Processing support set..."):
-        support_x_list = []
-        progress = st.progress(0)
+        model = load_embedding_model(input_shape, uploaded_model)
+    
+    # Process support
+    with st.spinner("⏳ Processing support..."):
+        sup_x_list = []
+        sup_y_list = []
         
-        for idx, (cls_idx, f) in enumerate(support_files):
-            y, sr = load_audio_from_upload(f, target_sr=SR_DEFAULT)
-            feat = extract_mfcc_like_notebook(y, sr=sr)
-
-            if preprocess is not None and use_meta:
-                usia_c, gender_c, prov_c = class_meta[cls_idx]
-                x_final = build_x_final(feat, preprocess, usia_c, gender_c, prov_c)
-            else:
-                x_final = feat
-
-            support_x_list.append(x_final)
-            progress.progress((idx + 1) / len(support_files))
+        for item in support_data:
+            y, sr = load_audio_from_upload(item['file'])
+            feat = extract_mfcc_features(y, sr)
+            
+            if use_meta and item['meta']:
+                u, g, p = item['meta']
+                feat = add_metadata(feat, preprocess, u, g, p)
+            
+            sup_x_list.append(feat)
+            sup_y_list.append(item['class_idx'])
         
-        progress.empty()
-
-    support_x = np.stack(support_x_list, axis=0).astype(np.float32)
-    support_y = np.array(support_labels, dtype=np.int32)
-
-    # Process query set
-    with st.spinner("⏳ Processing query set..."):
-        query_x_list = []
+        support_x = np.stack(sup_x_list).astype(np.float32)
+        support_y = np.array(sup_y_list, dtype=np.int32)
+    
+    # Process query
+    with st.spinner("⏳ Processing query..."):
+        qry_x_list = []
         
-        for f in query_files:
-            y, sr = load_audio_from_upload(f, target_sr=SR_DEFAULT)
-            feat = extract_mfcc_like_notebook(y, sr=sr)
-
-            if preprocess is not None and use_meta and query_meta:
-                usia_q, gender_q, prov_q = query_meta
-                x_final = build_x_final(feat, preprocess, usia_q, gender_q, prov_q)
-            else:
-                x_final = feat
-
-            query_x_list.append(x_final)
-
-    query_x = np.stack(query_x_list, axis=0).astype(np.float32)
-
-    # Prediction
+        for qf in query_files:
+            y, sr = load_audio_from_upload(qf)
+            feat = extract_mfcc_features(y, sr)
+            
+            if use_meta and query_meta:
+                u, g, p = query_meta
+                feat = add_metadata(feat, preprocess, u, g, p)
+            
+            qry_x_list.append(feat)
+        
+        query_x = np.stack(qry_x_list).astype(np.float32)
+    
+    # Predict
     with st.spinner("🔮 Predicting..."):
         try:
-            probs, pred_idx = prototypical_predict(
-                emb_model, 
+            probs, preds = prototypical_predict(
+                model, 
                 support_x, 
                 support_y, 
                 query_x, 
-                class_names
+                n_way
             )
         except Exception as e:
-            st.error(f"❌ Prediction error: {e}")
+            st.error(f"❌ Error: {e}")
+            import traceback
+            st.code(traceback.format_exc())
             st.stop()
-
-    # Display results
-    st.success("✅ Prediksi Selesai!")
+    
+    # Results
+    st.success("✅ Selesai!")
     st.divider()
-    st.subheader("📊 Hasil Prediksi")
-
-    for i, f in enumerate(query_files):
-        pred_name = class_names[int(pred_idx[i])]
-        confidence = probs[i, int(pred_idx[i])] * 100
+    st.subheader("📊 Hasil")
+    
+    for i, qf in enumerate(query_files):
+        pred_class = class_names[preds[i]]
+        conf = probs[i, preds[i]] * 100
         
-        col1, col2 = st.columns([2, 1])
+        c1, c2 = st.columns([2, 1])
         
-        with col1:
-            st.markdown(f"### Query #{i+1}: {f.name}")
-            st.audio(f)
+        with c1:
+            st.markdown(f"### {qf.name}")
+            st.audio(qf)
         
-        with col2:
-            st.metric("Prediksi", pred_name, f"{confidence:.1f}%")
+        with c2:
+            st.metric("Prediksi", pred_class, f"{conf:.1f}%")
             
-            # Top-k probabilities
-            st.markdown("**Detail Probabilitas:**")
-            topk = min(len(class_names), 5)
-            order = np.argsort(probs[i])[::-1][:topk]
-            
-            for rank, j in enumerate(order, 1):
-                prob_pct = probs[i, int(j)] * 100
-                st.write(f"{rank}. {class_names[int(j)]}: {prob_pct:.2f}%")
+            st.write("**Top Probabilities:**")
+            for j in np.argsort(probs[i])[::-1]:
+                p = probs[i, j] * 100
+                st.write(f"- {class_names[j]}: {p:.1f}%")
         
         st.divider()
-
+    
     st.balloons()
