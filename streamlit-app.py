@@ -7,27 +7,28 @@ import os
 import tensorflow as tf
 
 # ==========================================================
-# 1. FIX REGISTRASI CUSTOM MODEL
+# 1. FIX KUSTOM OBJECT (MODIFIKASI RADIKAL)
 # ==========================================================
-# Kita gunakan decorator untuk meregistrasi class agar Keras mengenalinya
 @tf.keras.utils.register_keras_serializable(package="Custom")
 class PrototypicalNetwork(tf.keras.Model):
     def __init__(self, *args, **kwargs):
-        # Mengabaikan argumen kustom yang menyebabkan error load
+        # Buang semua argumen yang berpotensi menyebabkan error 'str'
         kwargs.pop('embedding_model', None)
-        super().__init__(*args, **kwargs)
+        kwargs.pop('name', None) 
+        super().__init__(**kwargs)
     
     def call(self, inputs):
         return inputs
 
     @classmethod
     def from_config(cls, config):
-        # Menghapus config yang tidak dikenal sebelum inisialisasi
-        config.pop('embedding_model', None)
+        # Membersihkan config secara total dari atribut bermasalah
+        for key in ["embedding_model", "name", "trainable", "dtype"]:
+            config.pop(key, None)
         return cls(**config)
 
 # ==========================================================
-# 2. KONFIGURASI UI
+# 2. LOAD MODEL DENGAN ERROR HANDLING LEBIH LUAS
 # ==========================================================
 st.set_page_config(page_title="Deteksi Aksen Indonesia", page_icon="🎙️", layout="wide")
 
@@ -38,22 +39,24 @@ def load_accent_model():
         return None
     
     try:
-        # Mencoba load dengan berbagai kombinasi custom objects
+        # Gunakan custom_objects yang sangat minimalis
         custom_objects = {
             'PrototypicalNetwork': PrototypicalNetwork,
-            'embedding_model': lambda **kwargs: None
+            'embedding_model': tf.keras.layers.Layer # Definisikan sebagai Layer kosong
         }
         
-        # Load dengan compile=False agar tidak mengecek optimizer/loss kustom
+        # Load dengan compile=False dan safe_mode=False
         model = tf.keras.models.load_model(
             model_path, 
             custom_objects=custom_objects, 
             compile=False,
-            safe_mode=False  # Sangat penting untuk model kustom
+            safe_mode=False
         )
         return model
     except Exception as e:
-        st.error(f"Gagal memuat arsitektur: {str(e)[:200]}")
+        # Jika masih gagal, tampilkan instruksi debug
+        st.error(f"❌ Masalah Arsitektur: {str(e)}")
+        st.info("💡 Tip: Pastikan versi TensorFlow di requirements.txt sama dengan versi saat training.")
         return None
 
 # ==========================================================
@@ -64,11 +67,11 @@ def predict_accent(audio_path, model):
         # Load audio 16kHz
         y, sr = librosa.load(audio_path, sr=16000)
         
-        # Ekstraksi Feature MFCC (Samakan dengan spek saat training)
+        # Ekstraksi MFCC
         mfcc = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=40)
         mfcc_mean = np.mean(mfcc.T, axis=0)
         
-        # Sesuaikan dimensi input (Batch, Features)
+        # Reshape ke (1, 40)
         X = np.expand_dims(mfcc_mean, axis=0)
         
         # Prediksi
@@ -83,7 +86,7 @@ def predict_accent(audio_path, model):
         return f"Error Prediksi: {str(e)}", 0
 
 # ==========================================================
-# 4. MAIN INTERFACE
+# 4. UI UTAMA
 # ==========================================================
 def main():
     st.title("🎙️ Deteksi Aksen Indonesia")
@@ -91,16 +94,21 @@ def main():
 
     model = load_accent_model()
 
+    if model:
+        st.sidebar.success("✅ Model Berhasil Dimuat")
+    else:
+        st.sidebar.error("❌ Model Gagal Dimuat")
+
     col1, col2 = st.columns([1, 1])
 
     with col1:
         st.subheader("📥 Input Audio")
-        audio_file = st.file_uploader("Upload (.wav, .mp3)", type=["wav", "mp3"])
+        audio_file = st.file_uploader("Upload file (.wav, .mp3)", type=["wav", "mp3"])
         
         if audio_file:
             st.audio(audio_file)
             if st.button("🚀 Analisis Aksen", type="primary", use_container_width=True):
-                if model is not None:
+                if model:
                     with st.spinner("Menganalisis..."):
                         with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
                             tmp.write(audio_file.getbuffer())
@@ -115,10 +123,9 @@ def main():
                                 st.info(f"Keyakinan: **{conf:.1f}%**")
                             else:
                                 st.error(label)
-                        
                         os.unlink(path)
                 else:
-                    st.error("Model gagal dimuat. Periksa log di atas.")
+                    st.error("Model tidak tersedia.")
 
 if __name__ == "__main__":
     main()
