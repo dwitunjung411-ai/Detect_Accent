@@ -10,17 +10,19 @@ import os
 # KONFIGURASI
 # =========================================================
 SAMPLE_RATE = 16000
-MAX_LEN = 5            # detik
+MAX_LEN = 5        # detik
 N_MFCC = 40
-N_SUPPORT = 5          # jumlah support per aksen
+N_SUPPORT = 5
+
+AUDIO_DIR = "data/audio"   # SESUAIKAN DENGAN FOLDER AUDIO
 
 # =========================================================
-# LOAD MODEL EMBEDDING
+# LOAD EMBEDDING MODEL
 # =========================================================
 @st.cache_resource
 def load_embedding_model():
     model = tf.keras.models.load_model(
-        "model_aksen.keras",
+        "model_aksen.keras",  # NAMA MODEL KAMU
         compile=False
     )
     return model
@@ -28,7 +30,7 @@ def load_embedding_model():
 embedding_model = load_embedding_model()
 
 # =========================================================
-# LOAD METADATA
+# LOAD METADATA (SESUAI CSV KAMU)
 # =========================================================
 @st.cache_data
 def load_metadata():
@@ -38,18 +40,29 @@ def load_metadata():
 metadata = load_metadata()
 
 # =========================================================
+# KOLOM METADATA (FIXED SESUAI FILE KAMU)
+# =========================================================
+AKSEN_COL = "label_aksen"
+PATH_COL = "file_name"
+
+# =========================================================
 # LABEL MAP (HARUS SAMA DENGAN TRAINING)
 # =========================================================
 label_map = {
-    "Sunda": 0,
-    "Jawa_Tengah": 1,
-    "Jawa_Timur": 2,
-    "Betawi": 3,
-    "YogyaKarta": 4
+    "Betawi": 0,
+    "Sunda": 1,
+    "Jawa_Tengah": 2,
+    "Jawa_Timur": 3
 }
 
 id_to_label = {v: k for k, v in label_map.items()}
-metadata["label_id"] = metadata["aksen"].map(label_map)
+
+metadata["label_id"] = metadata[AKSEN_COL].map(label_map)
+
+# gabungkan folder + nama file
+metadata["file_path"] = metadata[PATH_COL].apply(
+    lambda x: os.path.join(AUDIO_DIR, x)
+)
 
 # =========================================================
 # FEATURE EXTRACTION
@@ -67,15 +80,15 @@ def extract_feature(path):
         n_mfcc=N_MFCC
     )
 
-    return mfcc.T  # (time, n_mfcc)
+    return mfcc.T  # (time, mfcc)
 
 # =========================================================
-# AUTO SUPPORT SET GENERATOR
+# AUTO SUPPORT SET DARI METADATA
 # =========================================================
 def generate_support_set(metadata):
     support_x, support_y = [], []
 
-    for label_name, label_id in label_map.items():
+    for aksen, label_id in label_map.items():
         samples = metadata[metadata["label_id"] == label_id]
 
         if len(samples) == 0:
@@ -97,8 +110,8 @@ def generate_support_set(metadata):
 # =========================================================
 # COMPUTE PROTOTYPES
 # =========================================================
-def compute_prototypes(embedding_model, support_x, support_y):
-    embeddings = embedding_model.predict(support_x, verbose=0)
+def compute_prototypes(model, support_x, support_y):
+    embeddings = model.predict(support_x, verbose=0)
 
     prototypes, labels = [], np.unique(support_y)
 
@@ -111,8 +124,8 @@ def compute_prototypes(embedding_model, support_x, support_y):
 # =========================================================
 # PREDICTION
 # =========================================================
-def predict_accent(embedding_model, query_feat, prototypes, labels):
-    query_emb = embedding_model.predict(
+def predict_accent(model, query_feat, prototypes, labels):
+    query_emb = model.predict(
         np.expand_dims(query_feat, axis=0),
         verbose=0
     )
@@ -126,7 +139,7 @@ def predict_accent(embedding_model, query_feat, prototypes, labels):
 # STREAMLIT UI
 # =========================================================
 st.title("🎙️ Deteksi Aksen Bahasa (Few-Shot Learning)")
-st.write("Prototypical Network + Support Set Otomatis dari Metadata")
+st.write("Prototypical Network + Metadata Otomatis")
 
 uploaded_file = st.file_uploader(
     "Upload audio (.wav)",
@@ -141,21 +154,21 @@ if uploaded_file:
     st.audio(uploaded_file)
 
     with st.spinner("🔍 Memproses audio..."):
-        # 1. Generate support set
+        # 1. Support set
         support_x, support_y = generate_support_set(metadata)
 
         if len(support_x) == 0:
-            st.error("❌ Support set kosong. Cek metadata.csv & path audio.")
+            st.error("❌ Support set kosong. Cek metadata & folder audio.")
             st.stop()
 
-        # 2. Compute prototypes
+        # 2. Prototype
         prototypes, proto_labels = compute_prototypes(
             embedding_model,
             support_x,
             support_y
         )
 
-        # 3. Extract query feature
+        # 3. Query feature
         query_feat = extract_feature(query_path)
 
         # 4. Predict
@@ -168,12 +181,12 @@ if uploaded_file:
 
     st.success(f"✅ Aksen terdeteksi: **{id_to_label[pred_label]}**")
 
-    # Confidence (softmax dari jarak)
+    # Confidence
     confidence = tf.nn.softmax(-distances).numpy()
+
+    st.subheader("Confidence Score")
     for i, lbl in enumerate(proto_labels):
-        st.write(
-            f"{id_to_label[lbl]} : {confidence[i]*100:.2f}%"
-        )
+        st.write(f"{id_to_label[lbl]} : {confidence[i]*100:.2f}%")
 
     os.remove(query_path)
 
