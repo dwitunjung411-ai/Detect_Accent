@@ -64,24 +64,26 @@ def load_metadata_df():
 # 3. FUNGSI PREDIKSI (PERBAIKAN ERROR QUERY_SET)
 # ==========================================================
 def predict_accent(audio_path, model):
-    if model is None: return "Model tidak tersedia"
     try:
-        # Load & Preprocess
+        # 1. Load audio dan ekstraksi feature seperti biasa
         y, sr = librosa.load(audio_path, sr=16000)
         mfcc = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=40)
-        mfcc_scaled = np.mean(mfcc.T, axis=0)
+        mfcc_mean = np.mean(mfcc.T, axis=0)
+        query_set = np.expand_dims(mfcc_mean, axis=0) 
+        support_set = np.zeros_like(query_set) 
 
-        # Sesuai error: Model Prototypical seringkali butuh input dalam bentuk list
-        # atau argumen bernama jika dibungkus class kustom
-        input_data = np.expand_dims(mfcc_scaled, axis=0)
-
-        # Mencoba prediksi langsung (seringkali model.predict cukup jika call() sudah benar)
-        prediction = model.predict(input_data)
-
-        aksen_classes = ["Sunda", "Jawa Tengah", "Jawa Timur", "Yogyakarta", "Betawi"]
-        return aksen_classes[np.argmax(prediction)]
+        pred = model.predict({
+            'query_set': query_set,
+            'support_set': support_set
+        }, verbose=0)
+        
+        classes = ["Sunda", "Jawa Tengah", "Jawa Timur", "Yogyakarta", "Betawi"]
+        idx = np.argmax(pred[0])
+        conf = tf.nn.softmax(pred[0])[idx] * 100
+        
+        return classes[idx], conf
     except Exception as e:
-        return f"Error Analisis: {str(e)}"
+        return f"Error Analisis: {str(e)}", 0
 
 
 # ==========================================================
@@ -165,3 +167,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
