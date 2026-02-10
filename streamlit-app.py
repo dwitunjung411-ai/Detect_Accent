@@ -4,13 +4,6 @@ import pandas as pd
 import librosa
 import tempfile
 import os
-
-# ==========================================================
-# PAKSA CLEAR CACHE - HAPUS SETELAH BERHASIL
-# ==========================================================
-st.cache_resource.clear()
-st.cache_data.clear()
-
 # ==========================================================
 # LOAD MODEL DENGAN MULTIPLE FALLBACK
 # ==========================================================
@@ -56,13 +49,19 @@ def load_accent_model_v2():
                 return None
 
 # ==========================================================
-# LOAD METADATA
+# LOAD METADATA - DIPERBAIKI
 # ==========================================================
 @st.cache_data
 def load_metadata_df():
-    if os.path.exists("metadata.csv"):
-        return pd.read_csv("metadata.csv")
-    return None
+    try:
+        if os.path.exists("metadata.csv"):
+            df = pd.read_csv("metadata.csv")
+            return df
+        else:
+            return None
+    except Exception as e:
+        st.sidebar.warning(f"⚠️ Metadata error: {str(e)[:100]}")
+        return None
 
 # ==========================================================
 # PREDIKSI
@@ -103,14 +102,6 @@ st.set_page_config(page_title="Deteksi Aksen", page_icon="🎙️", layout="wide
 st.title("🎙️ Deteksi Aksen Indonesia")
 st.divider()
 
-# Sidebar - Clear Cache Button
-with st.sidebar:
-    st.header("⚙️ Pengaturan")
-    if st.button("🔄 Clear Cache & Reload", use_container_width=True):
-        st.cache_resource.clear()
-        st.cache_data.clear()
-        st.rerun()
-    st.divider()
 
 # Load
 model = load_accent_model_v2()
@@ -138,24 +129,41 @@ with col1:
                     # Predict
                     result = predict_accent(path, model)
                     
-                    # Show
+                    # Show hasil di col2
                     with col2:
                         st.subheader("📊 Hasil")
-                        st.success(result)
+                        
+                        # Tampilkan hasil prediksi
+                        if "Error" in result:
+                            st.error(result)
+                        else:
+                            st.success(result)
                         
                         st.divider()
                         
-                        # Metadata
-                        if metadata is not None:
-                            match = metadata[metadata['file_name'] == audio.name]
-                            if not match.empty:
-                                info = match.iloc[0]
-                                st.write(f"🎂 Usia: {info.get('usia', '-')} Tahun")
-                                st.write(f"🚻 Gender: {info.get('gender', '-')}")
-                                st.write(f"🗺️ Provinsi: {info.get('provinsi', '-')}")
+                        # Metadata - DIPERBAIKI
+                        if metadata is not None and not metadata.empty:
+                            try:
+                                # Cari berdasarkan nama file
+                                match = metadata[metadata['file_name'] == audio.name]
+                                
+                                if not match.empty:
+                                    info = match.iloc[0]
+                                    st.write(f"🎂 Usia: {info.get('usia', '-')} Tahun")
+                                    st.write(f"🚻 Gender: {info.get('gender', '-')}")
+                                    st.write(f"🗺️ Provinsi: {info.get('provinsi', '-')}")
+                                else:
+                                    st.info("ℹ️ Data metadata tidak ditemukan untuk file ini")
+                            except Exception as e:
+                                st.warning(f"⚠️ Tidak bisa load metadata: {str(e)[:100]}")
+                        else:
+                            st.info("ℹ️ File metadata.csv tidak tersedia")
                     
                     # Cleanup
-                    os.unlink(path)
+                    try:
+                        os.unlink(path)
+                    except:
+                        pass
             else:
                 st.error("❌ Model tidak tersedia. Silakan refresh halaman atau klik tombol 'Clear Cache & Reload' di sidebar.")
 
