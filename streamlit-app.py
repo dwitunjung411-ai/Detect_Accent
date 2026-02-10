@@ -67,28 +67,38 @@ def predict_accent(audio_path, model):
         # 1. Ekstraksi Fitur (MFCC)
         y, sr = librosa.load(audio_path, sr=16000)
         mfcc = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=40)
-        mfcc_scaled = np.mean(mfcc.T, axis=0) # Shape: (40,)
+        mfcc_scaled = np.mean(mfcc.T, axis=0)
         
-        # 2. Siapkan Tensor (Sesuai foto: tf.convert_to_tensor)
-        # Query Set (data yang di-upload)
+        # 2. Siapkan Tensor
         query_tensor = tf.convert_to_tensor([mfcc_scaled], dtype=tf.float32)
         
-        # Support Set (Data referensi wajib untuk Prototypical)
+        # Menyiapkan Support Set (Gunakan data asli jika ada, ini contoh struktur)
         n_way = 5
         support_tensor, support_labels_tensor = get_dummy_support_data(n_way=n_way)
 
-        # 3. Panggil model.call dengan argumen LENGKAP sesuai foto
-        # Ini memperbaiki error 'missing a required argument'
-        logits = model.call(
-            support_set=support_tensor,
-            query_set=query_tensor,
-            support_labels=support_labels_tensor,
-            n_way=n_way
-        )
+        # 3. PERBAIKAN: Gunakan pemanggilan langsung atau pengecekan atribut
+        # Seringkali setelah load_model, kita cukup memanggil model() 
+        # dengan argumen yang dibungkus dalam list/dict
+        
+        try:
+            # Coba panggil sebagai fungsi model standar
+            logits = model(
+                support_set=support_tensor,
+                query_set=query_tensor,
+                support_labels=support_labels_tensor,
+                n_way=n_way
+            )
+        except TypeError:
+            # Jika masih error, gunakan metode .call secara eksplisit dari layer dasar
+            logits = model.call(
+                support_tensor, 
+                query_tensor, 
+                support_labels_tensor, 
+                n_way
+            )
 
         aksen_classes = ["Sunda", "Jawa Tengah", "Jawa Timur", "Yogyakarta", "Betawi"]
-        # Jika model mengembalikan logits/jarak, gunakan argmax
-        prediction_idx = np.argmax(logits.numpy() if hasattr(logits, 'numpy') else logits)
+        prediction_idx = np.argmax(logits)
         return aksen_classes[prediction_idx % len(aksen_classes)]
 
     except Exception as e:
@@ -148,3 +158,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
