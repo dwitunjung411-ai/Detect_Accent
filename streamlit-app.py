@@ -80,19 +80,6 @@ def load_model_debug():
         'PrototypicalNetwork': PrototypicalNetwork
     }
 
-            st.sidebar.success(f"✅ SUCCESS with {method_name}!")
-            
-            # Show model info
-            st.sidebar.write(f"📊 Model type: {type(model)}")
-            st.sidebar.write(f"📊 Input shape: {model.input_shape}")
-            st.sidebar.write(f"📊 Output shape: {model.output_shape}")
-            
-            return model
-            
-    
-    st.sidebar.error("❌ SEMUA METODE GAGAL!")
-    return None
-
 # ==========================================================
 # LOAD METADATA
 # ==========================================================
@@ -218,4 +205,5 @@ with col2:
 
 st.divider()
 st.caption("🎯 Sistem Deteksi Aksen Bahasa Indonesia | Powered by Deep Learning")
+
 
