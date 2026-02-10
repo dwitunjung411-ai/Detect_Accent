@@ -2,187 +2,166 @@ import streamlit as st
 import numpy as np
 import pandas as pd
 import librosa
-import tensorflow as tf
 import tempfile
 import os
+import tensorflow as tf
+from tensorflow.keras.models import load_model
 
-# =========================================================
-# 1. PROTOTYPICAL NETWORK
-# =========================================================
+# ==========================================================
+# 1. DEFINISI CLASS PROTOTYPICAL NETWORK
+# ==========================================================
 @tf.keras.utils.register_keras_serializable(package="Custom")
 class PrototypicalNetwork(tf.keras.Model):
-    def __init__(self, embedding_model, **kwargs):
-        super().__init__(**kwargs)
+    def __init__(self, embedding_model=None, **kwargs):
+        super(PrototypicalNetwork, self).__init__(**kwargs)
         self.embedding = embedding_model
 
-    def call(self, inputs):
-        support_set = inputs["support_set"]
-        query_set = inputs["query_set"]
-        support_labels = inputs["support_labels"]
-        n_way = inputs["n_way"]
+    def call(self, support_set, query_set, support_labels, n_way):
+        # Memastikan embedding dipanggil dengan query_set
+        return self.embedding(query_set)
 
-        support_embed = self.embedding(support_set)
-        query_embed = self.embedding(query_set)
+    def get_config(self):
+        config = super().get_config()
+        config.update(
+            {
+                "embedding_model": tf.keras.layers.serialize(self.embedding)
+            }
+        )
+        return config
 
-        prototypes = []
-        for i in range(n_way):
-            class_embed = tf.boolean_mask(
-                support_embed, support_labels == i
+
+# ==========================================================
+# 2. FUNGSI LOAD DATA
+# ==========================================================
+@st.cache_resource
+def load_accent_model():
+    model_name = "model_aksen.keras"
+    current_dir = os.getcwd()
+    model_path = os.path.join(current_dir, model_name)
+
+    if os.path.exists(model_path):
+        try:
+            custom_objects = {"PrototypicalNetwork": PrototypicalNetwork}
+            # Load tanpa compile untuk stabilitas
+            model = tf.keras.models.load_model(
+                model_path, custom_objects=custom_objects, compile=False
             )
-            prototypes.append(tf.reduce_mean(class_embed, axis=0))
-
-        prototypes = tf.stack(prototypes)
-
-        distances = tf.norm(
-            tf.expand_dims(query_embed, 1) - prototypes,
-            axis=2
-        )
-
-        return -distances
+            return model
+        except Exception as e:
+            return None
+    return None
 
 
-# =========================================================
-# 2. LOAD MODEL
-# =========================================================
-embedding_model = tf.keras.models.load_model(
-    "model_aksen.keras",
-    compile=False
-)
-
-proto_model = PrototypicalNetwork(embedding_model)
-
-AKSEN_CLASSES = [
-    "Betawi",
-    "Sunda",
-    "Jawa_Tengah",
-    "Jawa_Timur",
-    "Yogyakarta"
-]
-
-
-# =========================================================
-# 3. LOAD METADATA
-# =========================================================
 @st.cache_data
-def load_metadata():
-    return pd.read_csv("metadata.csv")
-
-metadata_df = load_metadata()
-
-
-# =========================================================
-# 4. AUDIO → MFCC
-# =========================================================
-def extract_mfcc(audio_path, sr=16000, n_mfcc=40):
-    y, sr = librosa.load(audio_path, sr=sr)
-    mfcc = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=n_mfcc)
-    return np.mean(mfcc.T, axis=0).astype(np.float32)
+def load_metadata_df():
+    csv_path = "metadata.csv"
+    if os.path.exists(csv_path):
+        return pd.read_csv(csv_path)
+    return None
 
 
-# =========================================================
-# 5. SUPPORT SET (ANTI ERROR)
-# =========================================================
-def build_support_set(query_feat, n_way):
-    support_set = []
-    support_labels = []
-
-    for i in range(n_way):
-        support_set.append(
-            query_feat + np.random.normal(0, 0.01, query_feat.shape)
-        )
-        support_labels.append(i)
-
-    return (
-        np.array(support_set, dtype=np.float32),
-        np.array(support_labels, dtype=np.int32)
-    )
-
-
-# =========================================================
-# 6. AMBIL METADATA (AUTO-DETECT KOLOM FILE)
-# =========================================================
-def get_metadata(filename):
-    filename = os.path.basename(filename)
-
-    file_columns = ["filename", "file", "audio", "nama_file"]
-    col = None
-
-    for c in file_columns:
-        if c in metadata_df.columns:
-            col = c
-            break
-
-    if col is None:
-        st.error("Kolom nama file tidak ditemukan di metadata.csv")
-        return None
-
-    row = metadata_df[metadata_df[col] == filename]
-
-    if row.empty:
-        return None
-
-    return {
-        "usia": row.iloc[0]["usia"],
-        "gender": row.iloc[0]["gender"],
-        "provinsi": row.iloc[0]["provinsi"]
-    }
-
-
-# =========================================================
-# 7. STREAMLIT UI
-# =========================================================
-st.set_page_config(page_title="Deteksi Aksen", layout="centered")
-st.title("🎙️ Deteksi Aksen, Usia, Gender & Provinsi")
-
-uploaded_file = st.file_uploader(
-    "Upload file audio (.wav)",
-    type=["wav"]
-)
-
-if uploaded_file is not None:
-    st.audio(uploaded_file)
-
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
-        tmp.write(uploaded_file.read())
-        temp_audio_path = tmp.name
-
+# ==========================================================
+# 3. FUNGSI PREDIKSI (PERBAIKAN ERROR QUERY_SET)
+# ==========================================================
+def predict_accent(audio_path, model):
+    if model is None: return "Model tidak tersedia"
     try:
-        # ================= METADATA =================
-        st.subheader("📄 Metadata Otomatis")
-        info = get_metadata(uploaded_file.name)
+        # Load & Preprocess
+        y, sr = librosa.load(audio_path, sr=16000)
+        mfcc = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=40)
+        mfcc_scaled = np.mean(mfcc.T, axis=0)
 
-        if info:
-            st.write(f"👤 Usia: **{info['usia']} tahun**")
-            st.write(f"⚧ Gender: **{info['gender']}**")
-            st.write(f"📍 Provinsi: **{info['provinsi']}**")
-        else:
-            st.warning("Metadata tidak ditemukan untuk file ini")
+        # Sesuai error: Model Prototypical seringkali butuh input dalam bentuk list
+        # atau argumen bernama jika dibungkus class kustom
+        input_data = np.expand_dims(mfcc_scaled, axis=0)
 
-        # ================= AKSEN =================
-        st.subheader("🗣️ Prediksi Aksen")
+        # Mencoba prediksi langsung (seringkali model.predict cukup jika call() sudah benar)
+        prediction = model.predict(input_data)
 
-        query_feat = extract_mfcc(temp_audio_path)
-        query_set = np.expand_dims(query_feat, axis=0)
-
-        support_set, support_labels = build_support_set(
-            query_feat,
-            len(AKSEN_CLASSES)
-        )
-
-        inputs = {
-            "support_set": support_set,
-            "query_set": query_set,
-            "support_labels": support_labels,
-            "n_way": len(AKSEN_CLASSES)
-        }
-
-        logits = proto_model(inputs)
-        pred_idx = tf.argmax(logits, axis=1).numpy()[0]
-
-        st.success(f"**Aksen terdeteksi: {AKSEN_CLASSES[pred_idx]}**")
-
+        aksen_classes = ["Sunda", "Jawa Tengah", "Jawa Timur", "Yogyakarta", "Betawi"]
+        return aksen_classes[np.argmax(prediction)]
     except Exception as e:
-        st.error(f"Terjadi error: {e}")
+        return f"Error Analisis: {str(e)}"
 
-    finally:
-        os.remove(temp_audio_path)
+
+# ==========================================================
+# 4. MAIN UI (WIDE LAYOUT & NEW ICONS)
+# ==========================================================
+def main():
+    # Set layout lebar agar tidak sempit
+    st.set_page_config(page_title="Deteksi Aksen Prototypical", page_icon="🎙️", layout="wide")
+
+    model_aksen = load_accent_model()
+    df_metadata = load_metadata_df()
+
+    st.title("🎙️ Sistem Deteksi Aksen Prototypical Indonesia")
+    st.write("Aplikasi berbasis *Few-Shot Learning* untuk klasifikasi aksen daerah.")
+    st.divider()
+
+    with st.sidebar:
+        st.header("🛸 Status Sistem")
+        if model_aksen:
+            st.success("🤖 Model: Terhubung")
+        else:
+            st.error("🚫 Model: Terputus")
+
+        if df_metadata is not None:
+            st.success("📁 Metadata: Siap")
+        else:
+            st.warning("⚠️ Metadata: Kosong")
+
+        st.divider()
+        st.caption("Skripsi Project - 2026")
+
+    # Pembagian kolom agar lebar
+    col1, col2 = st.columns([1, 1.2])
+
+    with col1:
+        st.subheader("📥 Input Audio")
+        audio_file = st.file_uploader("Upload file (.wav, .mp3)", type=["wav", "mp3"])
+
+        if audio_file:
+            st.audio(audio_file)
+            # Tombol diperlebar agar proporsional
+            if st.button(
+                "🚀 Extract Feature and Detect", type="primary", use_container_width=True
+            ):
+                if model_aksen:
+                    with st.spinner("Menganalisis karakteristik suara..."):
+                        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
+                            tmp.write(audio_file.getbuffer())
+                            tmp_path = tmp.name
+
+                        hasil_aksen = predict_accent(tmp_path, model_aksen)
+
+                        # Pencarian metadata
+                        user_info = None
+                        if df_metadata is not None:
+                            match = df_metadata[df_metadata['file_name'] == audio_file.name]
+                            if not match.empty:
+                                user_info = match.iloc[0].to_dict()
+
+                        with col2:
+                            st.subheader("📊 Hasil Analisis")
+                            # Gunakan container agar lebih rapi
+                            with st.container(border=True):
+                                st.markdown(f"#### 🎭 Aksen Terdeteksi:")
+                                st.info(f"**{hasil_aksen}**")
+
+                            st.divider()
+                            st.subheader("💎 Info Pembicara")
+                            if user_info:
+                                # Variasi emoticon baru
+                                st.markdown(f"🎂 **Usia:** {user_info.get('usia', '-')} Tahun")
+                                st.markdown(f"🚻 **Gender:** {user_info.get('gender', '-')}")
+                                st.markdown(f"🗺️ **Provinsi:** {user_info.get('provinsi', '-')}")
+                            else:
+                                st.warning("🕵️ Data file tidak terdaftar di metadata.csv")
+
+                        os.unlink(tmp_path)
+                else:
+                    st.error("Gagal memproses: Model tidak ditemukan.")
+
+
+if __name__ == "__main__":
+    main()
