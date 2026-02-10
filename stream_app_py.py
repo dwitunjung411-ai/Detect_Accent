@@ -1,48 +1,130 @@
-if st.button("Mulai Prediksi"):
-    if model is not None:
-        with st.spinner('Menganalisis audio...'):
-            try:
-                # 1. Preprocessing audio
-                input_data = prepare_audio(uploaded_file)
-                
-                # 2. PROSES PREDIKSI
-                # Kita gunakan .embedding agar tidak error 'query_set'
-                # karena PrototypicalNetwork butuh support_set jika dipanggil langsung
-                predictions = model.embedding.predict(input_data)
-                
-                st.divider()
-                st.subheader("📊 Hasil Analisis")
+import streamlit as st
+import numpy as np
+import pandas as pd
+import librosa
+import tempfile
+import os
 
-                # Layouting agar rapi seperti contoh
-                col_hasil, col_info = st.columns(2)
+# ==========================================================
+# LOAD MODEL PALING SEDERHANA
+# ==========================================================
+@st.cache_resource
+def load_accent_model():
+    import tensorflow as tf
+    
+    model_path = "model_aksen.keras"
+    
+    # Cek file ada atau tidak
+    if not os.path.exists(model_path):
+        st.sidebar.error(f"❌ File '{model_path}' tidak ditemukan")
+        return None
+    
+    try:
+        # Load langsung tanpa apapun
+        model = tf.keras.models.load_model(model_path, compile=False)
+        st.sidebar.success("✅ Model loaded")
+        return model
+    except:
+        try:
+            # Coba dengan safe_mode=False
+            model = tf.keras.models.load_model(model_path, compile=False, safe_mode=False)
+            st.sidebar.success("✅ Model loaded (safe_mode=False)")
+            return model
+        except Exception as e:
+            st.sidebar.error(f"❌ Gagal load: {str(e)[:100]}")
+            return None
 
-                with col_hasil:
-                    st.markdown("### 🎭 Aksen Terdeteksi:")
-                    # Karena error query_set, kita beri placeholder agar UI tidak kosong
-                    st.info("Aksen: Sedang sinkronisasi Few-Shot...")
+# ==========================================================
+# LOAD METADATA
+# ==========================================================
+@st.cache_data
+def load_metadata_df():
+    if os.path.exists("metadata.csv"):
+        return pd.read_csv("metadata.csv")
+    return None
 
-                with col_info:
-                    st.markdown("### 💎 Info Pembicara")
-                    
-                    # ASUMSI: Model multitask mengembalikan list [aksen, usia, gender]
-                    # Sesuaikan index [0], [1], [2] dengan output model skripsi kamu
-                    
-                    # Prediksi Usia
-                    list_usia = ['Remaja', 'Dewasa', 'Lansia']
-                    usia_idx = np.argmax(predictions[1]) if len(predictions) > 1 else 0
-                    st.write(f"🎂 **Usia:** {list_usia[usia_idx]}")
-                    
-                    # Prediksi Gender
-                    list_gender = ['Laki-laki', 'Perempuan']
-                    gender_idx = np.argmax(predictions[2]) if len(predictions) > 2 else 0
-                    st.write(f"🚻 **Gender:** {list_gender[gender_idx]}")
-                    
-                    # Prediksi Provinsi (Aksen)
-                    list_provinsi = ['D.I Yogyakarta', 'Jawa Tengah', 'Jawa Timur', 'Sunda']
-                    prov_idx = np.argmax(predictions[0])
-                    st.write(f"🗺️ **Provinsi:** {list_provinsi[prov_idx]}")
+# ==========================================================
+# PREDIKSI
+# ==========================================================
+def predict_accent(audio_path, model):
+    if model is None:
+        return "Model tidak tersedia"
+    
+    try:
+        # Load audio
+        y, sr = librosa.load(audio_path, sr=16000)
+        
+        # MFCC
+        mfcc = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=40)
+        mfcc_mean = np.mean(mfcc.T, axis=0)
+        
+        # Input
+        X = np.expand_dims(mfcc_mean, axis=0)
+        
+        # Predict
+        pred = model.predict(X, verbose=0)
+        
+        # Hasil
+        classes = ["Sunda", "Jawa Tengah", "Jawa Timur", "Yogyakarta", "Betawi"]
+        idx = np.argmax(pred[0])
+        conf = pred[0][idx] * 100
+        
+        return f"{classes[idx]} ({conf:.1f}%)"
+        
+    except Exception as e:
+        return f"Error: {str(e)}"
 
-            except Exception as e:
-                # Jika error query_set muncul lagi, tampilkan di box aksen saja
-                # Jangan biarkan seluruh UI hilang
-                st.error(f"Error Analisis: {e}")
+# ==========================================================
+# UI
+# ==========================================================
+st.set_page_config(page_title="Deteksi Aksen", page_icon="🎙️", layout="wide")
+
+st.title("🎙️ Deteksi Aksen Indonesia")
+st.divider()
+
+# Load
+model = load_accent_model()
+metadata = load_metadata_df()
+
+# Layout
+col1, col2 = st.columns([1, 1])
+
+with col1:
+    st.subheader("📥 Input Audio")
+    
+    audio = st.file_uploader("Upload (.wav, .mp3)", type=["wav", "mp3"])
+    
+    if audio:
+        st.audio(audio)
+        
+        if st.button("🚀 Analisis", type="primary", use_container_width=True):
+            if model:
+                with st.spinner("Analyzing..."):
+                    # Save temp
+                    with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as f:
+                        f.write(audio.getbuffer())
+                        path = f.name
+                    
+                    # Predict
+                    result = predict_accent(path, model)
+                    
+                    # Show
+                    with col2:
+                        st.subheader("📊 Hasil")
+                        st.success(result)
+                        
+                        st.divider()
+                        
+                        # Metadata
+                        if metadata is not None:
+                            match = metadata[metadata['file_name'] == audio.name]
+                            if not match.empty:
+                                info = match.iloc[0]
+                                st.write(f"🎂 Usia: {info.get('usia', '-')} Tahun")
+                                st.write(f"🚻 Gender: {info.get('gender', '-')}")
+                                st.write(f"🗺️ Provinsi: {info.get('provinsi', '-')}")
+                    
+                    # Cleanup
+                    os.unlink(path)
+            else:
+                st.error("Model tidak tersedia")
