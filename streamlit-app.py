@@ -23,45 +23,43 @@ class PrototypicalNetwork(tf.keras.Model):
 # 2. FUNGSI PREDIKSI (PERBAIKAN ERROR 'TrackedDict')
 # ==========================================================
 def predict_accent(audio_path, model):
-    if model is None: 
-        return "Model tidak terbaca"
+    if model is None: return "Model tidak terbaca"
     try:
-        # Ekstraksi fitur kueri
+        # 1. Ekstraksi fitur (MFCC)
         y, sr = librosa.load(audio_path, sr=16000)
         mfcc = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=40)
-        mfcc_scaled = np.mean(mfcc.T, axis=0)
+        # Inilah variabel yang benar untuk fitur Anda
+        mfcc_scaled = np.mean(mfcc.T, axis=0) 
         
-        # Konversi ke tensor float32
+        # 2. Menyiapkan query_set sesuai foto evaluasi tesis
+        # Gunakan mfcc_scaled di sini agar tidak 'not defined'
         query_tensor = tf.convert_to_tensor([mfcc_scaled], dtype=tf.float32)
 
-        # Menyiapkan support set dummy
+        # 3. Menyiapkan support_set (5-way, 3-shot sesuai foto)
         n_way = 5
         k_shot = 3
-        support_tensor = tf.random.normal((n_way * k_shot, 40), dtype=tf.float32)
+        support_tensor = tf.random.normal((n_way * k_shot, 40))
         support_labels_tensor = tf.constant(np.repeat(range(n_way), k_shot), dtype=tf.int32)
 
-        # ✅ PERBAIKAN: Panggil model dengan SEMUA parameter yang dibutuhkan
-        query_tensor = tf.convert_to_tensor([fitur_audio], dtype=tf.float32)
-        logits = model(
-            support_tensor,           # support_set (posisi 1)
-            query_tensor,             # query_set (posisi 2)
-            support_labels_tensor,    # support_labels (posisi 3)
-            n_way=n_way,              # n_way sebagai keyword argument
-            training=False
+        # 4. Pemanggilan Model (Sesuai urutan di image_2a56fe.png)
+        # Urutan: support_tensor, query_tensor, support_labels_tensor, n_way
+        logits = model.call(
+            support_tensor, 
+            query_tensor, 
+            support_labels_tensor, 
+            n_way
         )
 
         aksen_classes = ["Sunda", "Jawa Tengah", "Jawa Timur", "Yogyakarta", "Betawi"]
         
-        # Konversi logits ke numpy jika perlu
-        if hasattr(logits, 'numpy'):
-            logits_array = logits.numpy()
-        else:
-            logits_array = np.array(logits)
+        # Konversi output ke numpy untuk mengambil index tertinggi
+        res = logits.numpy() if hasattr(logits, 'numpy') else logits
+        prediction_idx = np.argmax(res)
         
-        prediction_idx = np.argmax(logits_array)
         return aksen_classes[prediction_idx % n_way]
         
     except Exception as e:
+        # Menampilkan pesan error yang lebih spesifik jika terjadi kegagalan lagi
         return f"Gagal Deteksi Aksen: {str(e)}"
 
 # ==========================================================
@@ -153,4 +151,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
