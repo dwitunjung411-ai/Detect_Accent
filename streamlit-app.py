@@ -68,10 +68,6 @@ def load_model_debug():
         st.sidebar.write("- model_aksen.keras")
         st.sidebar.write("- model.keras")
         return None
-    else:
-        st.sidebar.success(f"✓ File '{model_path}' ditemukan")
-        file_size = os.path.getsize(model_path) / (1024*1024)  # MB
-        st.sidebar.write(f"📦 Size: {file_size:.2f} MB")
     
     st.sidebar.divider()
     
@@ -205,5 +201,6 @@ with col2:
 
 st.divider()
 st.caption("🎯 Sistem Deteksi Aksen Bahasa Indonesia | Powered by Deep Learning")
+
 
 
