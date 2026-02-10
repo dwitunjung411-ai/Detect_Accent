@@ -42,7 +42,7 @@ class PrototypicalNetwork(tf.keras.Model):
 
 
 # =========================================================
-# 2. LOAD MODEL (NAMA MODEL ADA DI SINI)
+# 2. LOAD MODEL
 # =========================================================
 embedding_model = tf.keras.models.load_model(
     "model_aksen.keras",
@@ -99,12 +99,28 @@ def build_support_set(query_feat, n_way):
 
 
 # =========================================================
-# 6. AMBIL METADATA OTOMATIS
+# 6. AMBIL METADATA (AUTO-DETECT KOLOM FILE)
 # =========================================================
 def get_metadata(filename):
-    row = metadata_df[metadata_df["filename"] == filename]
+    filename = os.path.basename(filename)
+
+    file_columns = ["filename", "file", "audio", "nama_file"]
+    col = None
+
+    for c in file_columns:
+        if c in metadata_df.columns:
+            col = c
+            break
+
+    if col is None:
+        st.error("Kolom nama file tidak ditemukan di metadata.csv")
+        return None
+
+    row = metadata_df[metadata_df[col] == filename]
+
     if row.empty:
         return None
+
     return {
         "usia": row.iloc[0]["usia"],
         "gender": row.iloc[0]["gender"],
@@ -126,7 +142,6 @@ uploaded_file = st.file_uploader(
 if uploaded_file is not None:
     st.audio(uploaded_file)
 
-    # ===== SIMPAN AUDIO KE TEMP FILE =====
     with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
         tmp.write(uploaded_file.read())
         temp_audio_path = tmp.name
