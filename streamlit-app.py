@@ -103,15 +103,6 @@ st.set_page_config(page_title="Deteksi Aksen", page_icon="🎙️", layout="wide
 st.title("🎙️ Deteksi Aksen Indonesia")
 st.divider()
 
-# Sidebar - Clear Cache Button
-with st.sidebar:
-    st.header("⚙️ Pengaturan")
-    if st.button("🔄 Clear Cache & Reload", use_container_width=True):
-        st.cache_resource.clear()
-        st.cache_data.clear()
-        st.rerun()
-    st.divider()
-
 # Load
 model = load_accent_model_v2()
 metadata = load_metadata_df()
@@ -174,10 +165,11 @@ with col1:
                     except:
                         pass
             else:
-                st.error("❌ Model tidak tersedia. Silakan refresh halaman atau klik tombol 'Clear Cache & Reload' di sidebar.")
+                st.error("❌ Model tidak tersedia")
 
 with col2:
     if not audio:
         st.info("👆 Upload file audio di sebelah kiri untuk memulai")
+
 
 
