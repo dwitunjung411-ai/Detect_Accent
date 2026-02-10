@@ -40,26 +40,15 @@ def predict_accent(audio_path, model):
         support_tensor = tf.random.normal((n_way * k_shot, 40), dtype=tf.float32)
         support_labels_tensor = tf.constant(np.repeat(range(n_way), k_shot), dtype=tf.int32)
 
-        # ✅ PERBAIKAN: Gunakan model() langsung, bukan model.call()
-        # Opsi 1: Jika model butuh query saja
-        try:
-            logits = model(query_tensor, training=False)
-        except:
-            # Opsi 2: Jika model butuh support set juga
-            try:
-                if hasattr(model, 'embedding') and model.embedding is not None:
-                    logits = model.embedding(query_tensor, training=False)
-                else:
-                    # Opsi 3: Panggil dengan dictionary
-                    logits = model({
-                        'support_set': support_tensor,
-                        'query_set': query_tensor,
-                        'support_labels': support_labels_tensor,
-                        'n_way': n_way
-                    }, training=False)
-            except:
-                # Fallback: gunakan predict
-                logits = model.predict(query_tensor, verbose=0)
+        # ✅ PERBAIKAN: Panggil model dengan SEMUA parameter yang dibutuhkan
+        # Gunakan __call__ dengan unpacking arguments
+        logits = model(
+            support_tensor,      # support_set
+            query_tensor,        # query_set
+            support_labels_tensor,  # support_labels
+            n_way,               # n_way
+            training=False
+        )
 
         aksen_classes = ["Sunda", "Jawa Tengah", "Jawa Timur", "Yogyakarta", "Betawi"]
         
