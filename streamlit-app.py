@@ -6,6 +6,12 @@ import tempfile
 import os
 
 # ==========================================================
+# PAKSA CLEAR CACHE - HAPUS SETELAH BERHASIL
+# ==========================================================
+st.cache_resource.clear()
+st.cache_data.clear()
+
+# ==========================================================
 # LOAD MODEL DENGAN MULTIPLE FALLBACK
 # ==========================================================
 @st.cache_resource(show_spinner=False)
@@ -50,18 +56,27 @@ def load_accent_model_v2():
                 return None
 
 # ==========================================================
-# LOAD METADATA - DIPERBAIKI
+# LOAD METADATA - DIPERBAIKI TOTAL
 # ==========================================================
 @st.cache_data
 def load_metadata_df():
     try:
-        if os.path.exists("metadata.csv"):
-            df = pd.read_csv("metadata.csv")
+        metadata_path = "metadata.csv"
+        if os.path.exists(metadata_path):
+            # Load CSV dengan encoding yang benar
+            df = pd.read_csv(metadata_path, encoding='utf-8')
+            
+            # Hapus baris kosong jika ada
+            df = df.dropna(subset=['file_name'])
+            
+            # Strip whitespace dari kolom file_name
+            df['file_name'] = df['file_name'].str.strip()
+            
             return df
         else:
             return None
     except Exception as e:
-        st.sidebar.warning(f"⚠️ Metadata error: {str(e)[:100]}")
+        st.sidebar.warning(f"⚠️ Metadata load error: {str(e)[:150]}")
         return None
 
 # ==========================================================
@@ -69,7 +84,7 @@ def load_metadata_df():
 # ==========================================================
 def predict_accent(audio_path, model):
     if model is None:
-        return "Model tidak tersedia"
+        return "Model tidak tersedia", None
     
     try:
         # Load audio
@@ -90,10 +105,36 @@ def predict_accent(audio_path, model):
         idx = np.argmax(pred[0])
         conf = pred[0][idx] * 100
         
-        return f"{classes[idx]} ({conf:.1f}%)"
+        # Return hasil prediksi dan array probabilitas
+        result_text = f"{classes[idx]} ({conf:.1f}%)"
+        
+        # Buat dictionary untuk semua kelas dengan confidence
+        all_probs = {classes[i]: float(pred[0][i] * 100) for i in range(len(classes))}
+        
+        return result_text, all_probs
         
     except Exception as e:
-        return f"Error: {str(e)}"
+        return f"Error: {str(e)}", None
+
+# ==========================================================
+# FUNGSI CARI METADATA
+# ==========================================================
+def get_metadata_info(filename, metadata_df):
+    """Cari metadata berdasarkan nama file"""
+    if metadata_df is None or metadata_df.empty:
+        return None
+    
+    try:
+        # Cari exact match
+        match = metadata_df[metadata_df['file_name'] == filename]
+        
+        if not match.empty:
+            return match.iloc[0].to_dict()
+        else:
+            return None
+    except Exception as e:
+        st.warning(f"Error saat mencari metadata: {str(e)[:100]}")
+        return None
 
 # ==========================================================
 # UI
@@ -103,9 +144,22 @@ st.set_page_config(page_title="Deteksi Aksen", page_icon="🎙️", layout="wide
 st.title("🎙️ Deteksi Aksen Indonesia")
 st.divider()
 
+# Sidebar - Clear Cache Button
+with st.sidebar:
+    st.header("⚙️ Pengaturan")
+    if st.button("🔄 Clear Cache & Reload", use_container_width=True):
+        st.cache_resource.clear()
+        st.cache_data.clear()
+        st.rerun()
+    st.divider()
+
 # Load
 model = load_accent_model_v2()
 metadata = load_metadata_df()
+
+# Debug info di sidebar
+if metadata is not None:
+    st.sidebar.info(f"📊 Metadata: {len(metadata)} records loaded")
 
 # Layout
 col1, col2 = st.columns([1, 1])
@@ -127,37 +181,43 @@ with col1:
                         path = f.name
                     
                     # Predict
-                    result = predict_accent(path, model)
+                    result, all_probs = predict_accent(path, model)
                     
                     # Show hasil di col2
                     with col2:
-                        st.subheader("📊 Hasil")
+                        st.subheader("📊 Hasil Prediksi")
                         
-                        # Tampilkan hasil prediksi
+                        # Tampilkan hasil prediksi utama
                         if "Error" in result:
                             st.error(result)
                         else:
-                            st.success(result)
+                            st.success(f"**{result}**")
+                        
+                        # Tampilkan detail probabilitas semua kelas
+                        if all_probs:
+                            st.write("**Detail Confidence:**")
+                            for class_name, prob in sorted(all_probs.items(), key=lambda x: x[1], reverse=True):
+                                st.progress(prob / 100.0, text=f"{class_name}: {prob:.1f}%")
                         
                         st.divider()
                         
-                        # Metadata - DIPERBAIKI
-                        if metadata is not None and not metadata.empty:
-                            try:
-                                # Cari berdasarkan nama file
-                                match = metadata[metadata['file_name'] == audio.name]
-                                
-                                if not match.empty:
-                                    info = match.iloc[0]
-                                    st.write(f"🎂 Usia: {info.get('usia', '-')} Tahun")
-                                    st.write(f"🚻 Gender: {info.get('gender', '-')}")
-                                    st.write(f"🗺️ Provinsi: {info.get('provinsi', '-')}")
-                                else:
-                                    st.info("ℹ️ Data metadata tidak ditemukan untuk file ini")
-                            except Exception as e:
-                                st.warning(f"⚠️ Tidak bisa load metadata: {str(e)[:100]}")
+                        # Metadata
+                        st.subheader("📋 Info Speaker")
+                        
+                        metadata_info = get_metadata_info(audio.name, metadata)
+                        
+                        if metadata_info:
+                            col_info1, col_info2 = st.columns(2)
+                            
+                            with col_info1:
+                                st.metric("Usia", f"{metadata_info.get('usia', '-')} Tahun")
+                                st.metric("Gender", metadata_info.get('gender', '-'))
+                            
+                            with col_info2:
+                                st.metric("Provinsi", metadata_info.get('provinsi', '-'))
+                                st.metric("Label Aksen", metadata_info.get('label_aksen', '-'))
                         else:
-                            st.info("ℹ️ File metadata.csv tidak tersedia")
+                            st.info("ℹ️ Data metadata tidak ditemukan untuk file ini")
                     
                     # Cleanup
                     try:
@@ -165,11 +225,12 @@ with col1:
                     except:
                         pass
             else:
-                st.error("❌ Model tidak tersedia")
+                st.error("❌ Model tidak tersedia. Silakan refresh halaman atau klik tombol 'Clear Cache & Reload' di sidebar.")
 
 with col2:
     if not audio:
         st.info("👆 Upload file audio di sebelah kiri untuk memulai")
 
-
-
+# Footer
+st.divider()
+st.caption("🎯 Sistem Deteksi Aksen Bahasa Indonesia | Powered by Deep Learning")
