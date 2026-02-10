@@ -41,12 +41,12 @@ def predict_accent(audio_path, model):
         support_labels_tensor = tf.constant(np.repeat(range(n_way), k_shot), dtype=tf.int32)
 
         # ✅ PERBAIKAN: Panggil model dengan SEMUA parameter yang dibutuhkan
-        # Gunakan __call__ dengan unpacking arguments
+        # n_way harus sebagai keyword argument
         logits = model(
-            support_tensor,      # support_set
-            query_tensor,        # query_set
-            support_labels_tensor,  # support_labels
-            n_way,               # n_way
+            support_tensor,           # support_set (posisi 1)
+            query_tensor,             # query_set (posisi 2)
+            support_labels_tensor,    # support_labels (posisi 3)
+            n_way=n_way,              # n_way sebagai keyword argument
             training=False
         )
 
