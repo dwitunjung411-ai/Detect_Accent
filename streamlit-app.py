@@ -64,10 +64,8 @@ def load_model_debug():
             st.sidebar.write(f"  ✓ {f}")
     
     if not os.path.exists(model_path):
-        st.sidebar.error(f"❌ File '{model_path}' TIDAK DITEMUKAN!")
-        st.sidebar.write("📁 Cek apakah nama file benar:")
         st.sidebar.write("- model_aksen.keras ✓")
-        st.sidebar.write("- model_embedding_aksen.keras")
+        st.sidebar.write("- model_aksen.keras")
         st.sidebar.write("- model.keras")
         return None
     else:
@@ -81,23 +79,7 @@ def load_model_debug():
     custom_objects = {
         'PrototypicalNetwork': PrototypicalNetwork
     }
-    
-    # CHECK 2: Try loading methods
-    methods = [
-        ("Method 1: Standard load", 
-         lambda: keras.models.load_model(model_path, custom_objects=custom_objects, compile=False)),
-        
-        ("Method 2: safe_mode=False", 
-         lambda: keras.models.load_model(model_path, custom_objects=custom_objects, compile=False, safe_mode=False)),
-        
-        ("Method 3: Without custom_objects",
-         lambda: keras.models.load_model(model_path, compile=False, safe_mode=False)),
-    ]
-    
-    for i, (method_name, load_fn) in enumerate(methods, 1):
-        try:
-            st.sidebar.write(f"🔄 Trying {method_name}...")
-            model = load_fn()
+
             st.sidebar.success(f"✅ SUCCESS with {method_name}!")
             
             # Show model info
@@ -107,11 +89,6 @@ def load_model_debug():
             
             return model
             
-        except Exception as e:
-            st.sidebar.error(f"❌ {method_name} FAILED")
-            st.sidebar.code(str(e), language="text")
-            st.sidebar.divider()
-            continue
     
     st.sidebar.error("❌ SEMUA METODE GAGAL!")
     return None
@@ -166,14 +143,7 @@ st.set_page_config(page_title="Deteksi Aksen", page_icon="🎙️", layout="wide
 st.title("🎙️ Deteksi Aksen Indonesia")
 st.divider()
 
-# Sidebar
-with st.sidebar:
-    st.header("⚙️ Pengaturan")
-    if st.button("🔄 Clear Cache & Reload", use_container_width=True):
-        st.cache_resource.clear()
-        st.cache_data.clear()
-        st.rerun()
-    st.divider()
+
 
 # Load resources
 model = load_model_debug()
@@ -248,3 +218,4 @@ with col2:
 
 st.divider()
 st.caption("🎯 Sistem Deteksi Aksen Bahasa Indonesia | Powered by Deep Learning")
+
