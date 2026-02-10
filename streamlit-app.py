@@ -5,55 +5,24 @@ import librosa
 import tempfile
 import os
 
-# ==========================================================
-# PAKSA CLEAR CACHE - HAPUS SETELAH BERHASIL
-# ==========================================================
-st.cache_resource.clear()
-st.cache_data.clear()
+import tensorflow as tf
 
-# ==========================================================
-# LOAD MODEL DENGAN MULTIPLE FALLBACK
-# ==========================================================
-@st.cache_resource(show_spinner=False)
-def load_accent_model_v2():
-    import tensorflow as tf
-    
-    model_path = "model_aksen.keras"
-    
-    # Cek file ada atau tidak
-    if not os.path.exists(model_path):
-        st.sidebar.error(f"❌ File '{model_path}' tidak ditemukan")
-        return None
-    
-    # Coba metode 1: Load biasa
-    try:
-        model = tf.keras.models.load_model(model_path, compile=False)
-        st.sidebar.success("✅ Model loaded (method 1)")
-        return model
-    except Exception as e1:
-        st.sidebar.warning(f"⚠️ Method 1 failed: {str(e1)[:80]}")
-        
-        # Coba metode 2: safe_mode=False
-        try:
-            model = tf.keras.models.load_model(model_path, compile=False, safe_mode=False)
-            st.sidebar.success("✅ Model loaded (method 2 - safe_mode=False)")
-            return model
-        except Exception as e2:
-            st.sidebar.warning(f"⚠️ Method 2 failed: {str(e2)[:80]}")
-            
-            # Coba metode 3: dengan custom_objects kosong
-            try:
-                model = tf.keras.models.load_model(
-                    model_path, 
-                    custom_objects={},
-                    compile=False
-                )
-                st.sidebar.success("✅ Model loaded (method 3 - custom_objects)")
-                return model
-            except Exception as e3:
-                st.sidebar.error(f"❌ Semua metode gagal!")
-                st.sidebar.error(f"Error terakhir: {str(e3)[:150]}")
-                return None
+# Load dengan custom objects
+class PrototypicalNetwork(tf.keras.layers.Layer):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+    def call(self, inputs):
+        return inputs
+
+model = tf.keras.models.load_model(
+    'model_aksen.keras',
+    custom_objects={'PrototypicalNetwork': PrototypicalNetwork},
+    compile=False
+)
+
+# Save ulang tanpa custom layer (save weights saja)
+model.save_weights('model_weights.h5')
+print("Model weights saved!")
 
 # ==========================================================
 # LOAD METADATA - DIPERBAIKI TOTAL
@@ -234,3 +203,4 @@ with col2:
 # Footer
 st.divider()
 st.caption("🎯 Sistem Deteksi Aksen Bahasa Indonesia | Powered by Deep Learning")
+
