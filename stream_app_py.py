@@ -2,9 +2,9 @@ import streamlit as st
 import tensorflow as tf
 import os
 import numpy as np
+import librosa
 
-# 1. DEFINISI CUSTOM CLASS (Wajib sama dengan saat training)
-# Harus didaftarkan agar Keras bisa mengenali layer/model custom
+# 1. DEFINISI CUSTOM CLASS
 @tf.keras.utils.register_keras_serializable(package="Custom")
 class PrototypicalNetwork(tf.keras.Model):
     def __init__(self, embedding_model=None, **kwargs):
@@ -16,60 +16,80 @@ class PrototypicalNetwork(tf.keras.Model):
 
     def get_config(self):
         config = super().get_config()
-        config.update({
-            "embedding_model": tf.keras.layers.serialize(self.embedding)
-        })
+        config.update({"embedding_model": tf.keras.layers.serialize(self.embedding)})
         return config
 
-# 2. FUNGSI LOAD MODEL DENGAN ERROR HANDLING
+# 2. FUNGSI PREPROCESSING AUDIO (Agar ada Output)
+def prepare_audio(uploaded_file):
+    # Load audio
+    y, sr = librosa.load(uploaded_file, sr=16000)
+    # Ekstraksi Mel-Spectrogram (Sesuaikan dengan setting saat skripsi/training)
+    mel_spec = librosa.feature.melspectrogram(y=y, sr=sr, n_mels=128)
+    log_mel_spec = librosa.power_to_db(mel_spec, ref=np.max)
+    
+    # Reshape agar sesuai input CNN (Contoh: [1, 128, length, 1])
+    # Sesuaikan dimensi ini dengan input_shape model kamu!
+    features = np.expand_dims(log_mel_spec, axis=0) 
+    features = np.expand_dims(features, axis=-1)
+    return features
+
+# 3. FUNGSI LOAD MODEL
 @st.cache_resource
 def load_accent_model():
-    # Gunakan path relatif sederhana untuk Streamlit Cloud
     model_name = "model_aksen.keras"
-    
     if not os.path.exists(model_name):
-        st.error(f"File {model_name} tidak ditemukan di root directory!")
         return None
-
     try:
-        # Menyiapkan custom objects untuk Few-Shot Learning
         custom_objects = {"PrototypicalNetwork": PrototypicalNetwork}
-        model = tf.keras.models.load_model(model_name, custom_objects=custom_objects)
-        return model
-    except Exception as e:
-        # Menampilkan error spesifik di UI jika loading gagal
-        st.error(f"Gagal memuat model: {str(e)}")
+        # Memuat model ke dalam cache
+        return tf.keras.models.load_model(model_name, custom_objects=custom_objects)
+    except:
         return None
 
-# 3. SETTING PAGE
+# --- ALUR UTAMA ---
 st.set_page_config(page_title="Accent Recognition", layout="wide")
 
-# 4. SIDEBAR STATUS
-st.sidebar.title("⚙️ Status Sistem")
+# Mendefinisikan model di tingkat utama agar tidak "not defined"
 model = load_accent_model()
 
+# Sidebar
+st.sidebar.title("⚙️ Status Sistem")
 if model is not None:
     st.sidebar.success("Model: Online")
 else:
-    st.sidebar.error("Model: Offline")
+    st.sidebar.error("Model: Offline (File tidak ditemukan)")
 
-# 5. MAIN UI
+# UI Utama
 st.title("🎙️ Accent Recognition")
-st.write("Aplikasi pendeteksi aksen regional menggunakan Multitask CNN & Few-Shot Learning.")
-
-st.divider()
-
-# Input Audio
-st.subheader("📤 Input Audio")
-uploaded_file = st.file_uploader("Upload file (.wav, .mp3)", type=["wav", "mp3"])
+uploaded_file = st.file_uploader("Upload file audio", type=["wav", "mp3"])
 
 if uploaded_file is not None:
-    st.audio(uploaded_file, format='audio/wav')
+    st.audio(uploaded_file)
     
     if st.button("Mulai Prediksi"):
         if model is not None:
-            with st.spinner('Menganalisis aksen...'):
-                # Tambahkan logika preprocessing audio & prediksi di sini
-                st.info("Fitur prediksi sedang disiapkan.")
+            with st.spinner('Sedang memproses...'):
+                try:
+                    # 1. Preprocessing
+                    input_data = prepare_audio(uploaded_file)
+                    
+                    # 2. Prediksi (Gunakan model yang sudah di-load)
+                    prediction = model.predict(input_data)
+                    
+                    # 3. Menampilkan Hasil Output
+                    st.divider()
+                    st.subheader("📊 Hasil Analisis")
+                    
+                    # Contoh menampilkan label (Sesuaikan dengan kelas aksenmu)
+                    labels = ['Jawa', 'Sunda', 'Batak', 'Madura'] # Contoh label
+                    predicted_class = labels[np.argmax(prediction)]
+                    confidence = np.max(prediction) * 100
+                    
+                    col1, col2 = st.columns(2)
+                    col1.metric("Aksen Terdeteksi", predicted_class)
+                    col2.metric("Tingkat Keyakinan", f"{confidence:.2f}%")
+                    
+                except Exception as e:
+                    st.error(f"Terjadi kesalahan saat prediksi: {e}")
         else:
-            st.error("Sistem tidak siap. Periksa status model di sidebar.")
+            st.error("Model belum dimuat. Pastikan file model_aksen.keras sudah di-upload.")
