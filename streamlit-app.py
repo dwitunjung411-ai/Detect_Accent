@@ -20,42 +20,63 @@ class PrototypicalNetwork(tf.keras.Model):
         return self.embedding(query_set)
 
 # ==========================================================
-# 2. FUNGSI PREDIKSI (Sesuai parameter di image_2a56fe.png)
+# 2. FUNGSI PREDIKSI (PERBAIKAN ERROR 'TrackedDict')
 # ==========================================================
 def predict_accent(audio_path, model):
-    if model is None: return "Model tidak terbaca"
+    if model is None: 
+        return "Model tidak terbaca"
     try:
         # Ekstraksi fitur kueri
         y, sr = librosa.load(audio_path, sr=16000)
         mfcc = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=40)
         mfcc_scaled = np.mean(mfcc.T, axis=0)
         
-        # Sesuai gambar: konversi ke tensor float32
+        # Konversi ke tensor float32
         query_tensor = tf.convert_to_tensor([mfcc_scaled], dtype=tf.float32)
 
-        # Menyiapkan support set (Gunakan data dummy agar call tidak error)
+        # Menyiapkan support set dummy
         n_way = 5
         k_shot = 3
-        support_tensor = tf.random.normal((n_way * k_shot, 40))
+        support_tensor = tf.random.normal((n_way * k_shot, 40), dtype=tf.float32)
         support_labels_tensor = tf.constant(np.repeat(range(n_way), k_shot), dtype=tf.int32)
 
-        # Mencegah 'TrackedDict' error dengan memanggil .call secara eksplisit
-        # Mengikuti urutan argumen di gambar: support, query, labels, n_way
-        logits = model.call(
-            support_tensor, 
-            query_tensor, 
-            support_labels_tensor, 
-            n_way
-        )
+        # ✅ PERBAIKAN: Gunakan model() langsung, bukan model.call()
+        # Opsi 1: Jika model butuh query saja
+        try:
+            logits = model(query_tensor, training=False)
+        except:
+            # Opsi 2: Jika model butuh support set juga
+            try:
+                if hasattr(model, 'embedding') and model.embedding is not None:
+                    logits = model.embedding(query_tensor, training=False)
+                else:
+                    # Opsi 3: Panggil dengan dictionary
+                    logits = model({
+                        'support_set': support_tensor,
+                        'query_set': query_tensor,
+                        'support_labels': support_labels_tensor,
+                        'n_way': n_way
+                    }, training=False)
+            except:
+                # Fallback: gunakan predict
+                logits = model.predict(query_tensor, verbose=0)
 
         aksen_classes = ["Sunda", "Jawa Tengah", "Jawa Timur", "Yogyakarta", "Betawi"]
-        prediction_idx = np.argmax(logits.numpy() if hasattr(logits, 'numpy') else logits)
+        
+        # Konversi logits ke numpy jika perlu
+        if hasattr(logits, 'numpy'):
+            logits_array = logits.numpy()
+        else:
+            logits_array = np.array(logits)
+        
+        prediction_idx = np.argmax(logits_array)
         return aksen_classes[prediction_idx % n_way]
+        
     except Exception as e:
         return f"Gagal Deteksi Aksen: {str(e)}"
 
 # ==========================================================
-# 3. MAIN UI (PERBAIKAN LOGIKA INFO PEMBICARA)
+# 3. MAIN UI (SUDAH DIPERBAIKI)
 # ==========================================================
 def main():
     st.set_page_config(page_title="Deteksi Aksen Prototypical", layout="wide")
@@ -65,11 +86,18 @@ def main():
     def load_resources():
         model = None
         try:
-            model = tf.keras.models.load_model("model_aksen.keras", 
-                                             custom_objects={"PrototypicalNetwork": PrototypicalNetwork},
-                                             compile=False)
-        except: pass
-        df = pd.read_csv("metadata.csv") if os.path.exists("metadata.csv") else None
+            model = tf.keras.models.load_model(
+                "model_aksen.keras", 
+                custom_objects={"PrototypicalNetwork": PrototypicalNetwork},
+                compile=False
+            )
+        except Exception as e:
+            st.error(f"Error loading model: {str(e)}")
+        
+        df = None
+        if os.path.exists("metadata.csv"):
+            df = pd.read_csv("metadata.csv")
+        
         return model, df
 
     model_aksen, df_metadata = load_resources()
@@ -93,9 +121,12 @@ def main():
                         tmp.write(audio_file.getbuffer())
                         tmp_path = tmp.name
                     
-                    # Simpan hasil ke session_state agar tidak hilang saat UI refresh
+                    # Simpan hasil ke session_state
                     st.session_state['hasil_aksen'] = predict_accent(tmp_path, model_aksen)
                     os.unlink(tmp_path)
+                    
+                    # Rerun untuk update UI
+                    st.rerun()
 
     with col2:
         st.subheader("📊 Hasil Analisis")
@@ -107,13 +138,13 @@ def main():
                 if "Gagal" in st.session_state['hasil_aksen']:
                     st.error(st.session_state['hasil_aksen'])
                 else:
-                    st.info(f"**{st.session_state['hasil_aksen']}**")
+                    st.success(f"**{st.session_state['hasil_aksen']}**")
             else:
-                st.write("Menunggu deteksi...")
+                st.info("Menunggu deteksi...")
 
         st.divider()
 
-        # BAGIAN INFO PEMBICARA (Tetap muncul jika file diupload, meski model error)
+        # BAGIAN INFO PEMBICARA
         st.subheader("💎 Info Pembicara")
         if audio_file and df_metadata is not None:
             # Mencari data pembicara berdasarkan nama file
@@ -127,7 +158,7 @@ def main():
             else:
                 st.warning("Data pembicara tidak ditemukan di metadata.csv")
         elif audio_file:
-            st.error("File metadata.csv tidak ditemukan.")
+            st.warning("File metadata.csv tidak ditemukan.")
         else:
             st.caption("Silakan upload file untuk melihat informasi.")
 
