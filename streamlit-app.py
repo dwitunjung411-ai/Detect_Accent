@@ -58,7 +58,12 @@ def load_accent_model():
         st.error(f"❌ Masalah Arsitektur: {str(e)}")
         st.info("💡 Tip: Pastikan versi TensorFlow di requirements.txt sama dengan versi saat training.")
         return None
-
+@st.cache_data
+def load_metadata_df():
+    csv_path = "metadata.csv"
+    if os.path.exists(csv_path):
+        return pd.read_csv(csv_path)
+    return None
 # ==========================================================
 # 3. FUNGSI PREDIKSI
 # ==========================================================
@@ -129,3 +134,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
