@@ -31,8 +31,7 @@ N_FFT = 2048
 HOP_LENGTH = 512
 
 # Nama file yang diharapkan (sesuaikan jika berbeda)
-EMBEDDING_MODEL_KERAS = "embedding_model.keras"     # prefer: model utuh
-EMBEDDING_WEIGHTS_H5 = "embedding_weights.h5"       # alternatif: hanya weights
+EMBEDDING_MODEL_KERAS = "emodel_aksen.keras"     
 PREPROCESS_FILE = "preprocess.joblib"               # scaler_usia + ohe (gender, provinsi)
 
 # Batas UI agar tidak terlalu berat di Streamlit Cloud
@@ -244,19 +243,9 @@ with st.sidebar:
     q_query = st.slider("Jumlah query audio", 1, 10, 1)
 
     st.divider()
-    st.header("🧾 Metadata (opsional, tapi penting jika model dilatih pakai meta)")
-    if preprocess is None:
-        st.info("preprocess.joblib tidak ditemukan / gagal diload. Metadata tidak dipakai (raw audio features saja).")
-        use_meta = False
-    else:
-        use_meta = st.checkbox("Gunakan metadata (usia, gender, provinsi)", value=True)
+    
 
-    # opsi dropdown kalau disediakan di preprocess.joblib
-    gender_options = preprocess.get("gender_categories") if preprocess else None
-    prov_options = preprocess.get("provinsi_categories") if preprocess else None
 
-st.subheader("1) Support Set (k-shot per kelas)")
-st.write("Upload contoh audio per kelas. Setiap kelas butuh **k_shot** file.")
 
 support_files = []
 support_labels = []
