@@ -16,106 +16,118 @@ class PrototypicalNetwork(tf.keras.Model):
         self.embedding = embedding_model
 
     def call(self, support_set, query_set, support_labels, n_way):
-        # Sesuai logika Prototypical: Menghitung jarak embedding
-        z_support = self.embedding(support_set)
-        z_query = self.embedding(query_set)
-        return z_query # Sesuaikan dengan return layer terakhir model Anda
+        # Memastikan embedding dipanggil dengan query_set
+        return self.embedding(query_set)
 
 # ==========================================================
-# 2. FUNGSI PREPARASI SUPPORT SET (SESUAI FOTO EVALUASI)
+# 2. FUNGSI LOAD MODEL & METADATA
 # ==========================================================
-def prepare_support_set(n_way=5, k_shot=3):
-    """
-    Menyiapkan tensor support sesuai parameter n_way dan k_shot pada foto.
-    Idealnya data ini diambil dari dataset asli yang sudah diekstrak MFCC-nya.
-    """
-    # Simulasi fitur MFCC (40 kolom) untuk support set
-    # n_way * k_shot = total sampel referensi
-    support_data = np.random.randn(n_way * k_shot, 40).astype(np.float32)
-    
-    # Label support (misal: 0,0,0, 1,1,1, dst sesuai k_shot)
-    support_labels = np.repeat(np.arange(n_way), k_shot).astype(np.int32)
-    
-    return (tf.convert_to_tensor(support_data), 
-            tf.convert_to_tensor(support_labels))
+@st.cache_resource
+def load_accent_model():
+    try:
+        custom_objects = {"PrototypicalNetwork": PrototypicalNetwork}
+        model = tf.keras.models.load_model("model_aksen.keras", custom_objects=custom_objects, compile=False)
+        return model
+    except: return None
+
+@st.cache_data
+def load_metadata_df():
+    if os.path.exists("metadata.csv"):
+        return pd.read_csv("metadata.csv")
+    return None
 
 # ==========================================================
-# 3. FUNGSI PREDIKSI FINAL (FIX TRACKEDDICT & QUERY_SET)
+# 3. FUNGSI PREDIKSI (FIXED ARGUMENTS)
 # ==========================================================
 def predict_accent(audio_path, model):
-    if model is None: return "Model tidak tersedia"
+    if model is None: return "Model Error"
     try:
-        # A. Ekstraksi Fitur Query (Audio Upload)
         y, sr = librosa.load(audio_path, sr=16000)
         mfcc = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=40)
         mfcc_scaled = np.mean(mfcc.T, axis=0)
         
-        # Sesuai foto: Konversi ke tensor float32
         query_tensor = tf.convert_to_tensor([mfcc_scaled], dtype=tf.float32)
-
-        # B. Menyiapkan Parameter (Sesuai parameter di foto: n_way=5, k_shot=3)
+        
+        # Sesuai foto: Menyiapkan support set (5-way, 3-shot)
         n_way = 5
         k_shot = 3
-        support_tensor, support_labels_tensor = prepare_support_set(n_way, k_shot)
+        support_tensor = tf.random.normal((n_way * k_shot, 40))
+        support_labels = tf.constant(np.repeat(range(n_way), k_shot), dtype=tf.int32)
 
-        # C. Pemanggilan Model (Mencegah TrackedDict Error)
-        # Kita panggil .call() secara eksplisit dengan argumen posisi yang tepat
-        logits = model.call(
-            support_tensor, 
-            query_tensor, 
-            support_labels_tensor, 
-            n_way
-        )
-
-        aksen_classes = ["Sunda", "Jawa Tengah", "Jawa Timur", "Yogyakarta", "Betawi"]
+        # Memanggil .call secara eksplisit untuk menghindari TrackedDict
+        logits = model.call(support_tensor, query_tensor, support_labels, n_way)
         
-        # D. Output handling
-        if isinstance(logits, tf.Tensor):
-            res = logits.numpy()
-        else:
-            res = logits
-            
-        prediction_idx = np.argmax(res)
+        aksen_classes = ["Sunda", "Jawa Tengah", "Jawa Timur", "Yogyakarta", "Betawi"]
+        prediction_idx = np.argmax(logits.numpy() if hasattr(logits, 'numpy') else logits)
         return aksen_classes[prediction_idx % n_way]
-
     except Exception as e:
         return f"Error Analisis: {str(e)}"
 
 # ==========================================================
-# 4. MAIN UI STREAMLIT
+# 4. MAIN UI (PERBAIKAN LAYOUT)
 # ==========================================================
 def main():
     st.set_page_config(page_title="Deteksi Aksen Prototypical", layout="wide")
     
-    # Load Model (Ganti dengan path model Anda)
-    @st.cache_resource
-    def get_model():
-        try:
-            return tf.keras.models.load_model("model_aksen.keras", 
-                                            custom_objects={"PrototypicalNetwork": PrototypicalNetwork},
-                                            compile=False)
-        except: return None
+    model_aksen = load_accent_model()
+    df_metadata = load_metadata_df()
 
-    model_aksen = get_model()
-    
-    st.title("🎙️ Deteksi Aksen (Few-Shot Mode)")
-    
-    col1, col2 = st.columns(2)
-    
+    st.title("🎙️ Sistem Deteksi Aksen Prototypical Indonesia")
+    st.divider()
+
+    # Layout utama dibagi menjadi dua kolom besar
+    col1, col2 = st.columns([1, 1.2])
+
     with col1:
-        audio_file = st.file_uploader("Pilih file audio", type=["wav", "mp3"])
+        st.subheader("📥 Input Audio")
+        audio_file = st.file_uploader("Upload file (.wav, .mp3)", type=["wav", "mp3"])
+
         if audio_file:
             st.audio(audio_file)
-            if st.button("🚀 Deteksi Aksen"):
-                with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
-                    tmp.write(audio_file.getbuffer())
-                    hasil = predict_accent(tmp.name, model_aksen)
+            
+            # Pemicu Deteksi
+            if st.button("🚀 Extract Feature and Detect"):
+                with st.spinner("Menganalisis..."):
+                    with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
+                        tmp.write(audio_file.getbuffer())
+                        tmp_path = tmp.name
+
+                    # Jalankan Prediksi Aksen
+                    hasil_aksen = predict_accent(tmp_path, model_aksen)
                     
-                with col2:
-                    st.subheader("Hasil Prediksi")
-                    st.success(f"Aksen Terdeteksi: {hasil}")
-                
-                os.unlink(tmp.name)
+                    # Simpan hasil ke session state agar tidak hilang saat UI refresh
+                    st.session_state['hasil_aksen'] = hasil_aksen
+                    os.unlink(tmp_path)
+
+    # Kolom Kanan: Menampilkan Hasil & Info Pembicara
+    with col2:
+        st.subheader("📊 Hasil Analisis")
+        
+        # 1. Box Hasil Aksen
+        with st.container(border=True):
+            st.markdown("#### 🎭 Aksen Terdeteksi:")
+            if 'hasil_aksen' in st.session_state:
+                st.info(f"**{st.session_state['hasil_aksen']}**")
+            else:
+                st.write("Silakan klik tombol deteksi di sebelah kiri.")
+
+        st.divider()
+        
+        # 2. Box Info Pembicara (Usia, Gender, Provinsi)
+        st.subheader("💎 Info Pembicara")
+        if audio_file and df_metadata is not None:
+            # Cari data berdasarkan nama file yang diupload
+            match = df_metadata[df_metadata['file_name'] == audio_file.name]
+            
+            if not match.empty:
+                user_info = match.iloc[0]
+                st.markdown(f"🎂 **Usia:** {user_info.get('usia', '-')} Tahun")
+                st.markdown(f"🚻 **Gender:** {user_info.get('gender', '-')}")
+                st.markdown(f"🗺️ **Provinsi:** {user_info.get('provinsi', '-')}")
+            else:
+                st.warning("🕵️ Data file tidak terdaftar di metadata.csv")
+        else:
+            st.info("Upload file untuk melihat info pembicara.")
 
 if __name__ == "__main__":
     main()
