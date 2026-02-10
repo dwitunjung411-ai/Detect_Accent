@@ -12,7 +12,7 @@ import os
 def load_accent_model():
     import tensorflow as tf
     
-    model_path = "model_embedding_aksen.keras"
+    model_path = "model_aksen.keras"
     
     # Cek file ada atau tidak
     if not os.path.exists(model_path):
