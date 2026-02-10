@@ -1,5 +1,6 @@
 streamlit
-tensorflow==2.15.0  # Sesuaikan dengan versi saat training
+tensorflow>=2.16.1
+keras>=3.0.0
 librosa
 numpy
 pandas
