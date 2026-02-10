@@ -2,171 +2,129 @@ import streamlit as st
 import numpy as np
 import pandas as pd
 import librosa
-import tensorflow as tf
 import tempfile
 import os
-import zipfile
-import shutil
 
-# =========================================================
-# KONFIGURASI
-# =========================================================
-SAMPLE_RATE = 16000
-MAX_LEN = 5
-N_MFCC = 40
-N_SUPPORT = 5
-
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-TMP_AUDIO_DIR = os.path.join(BASE_DIR, "_audio_tmp")
-
-# =========================================================
-# LOAD MODEL
-# =========================================================
+# ==========================================================
+# LOAD MODEL PALING SEDERHANA
+# ==========================================================
 @st.cache_resource
-def load_model():
-    return tf.keras.models.load_model(
-        os.path.join(BASE_DIR, "model_aksen.keras"),
-        compile=False
-    )
+def load_accent_model():
+    import tensorflow as tf
+    
+    model_path = "model_embedding_aksen.keras"
+    
+    # Cek file ada atau tidak
+    if not os.path.exists(model_path):
+        st.sidebar.error(f"❌ File '{model_path}' tidak ditemukan")
+        return None
+    
+    try:
+        # Load langsung tanpa apapun
+        model = tf.keras.models.load_model(model_path, compile=False)
+        st.sidebar.success("✅ Model loaded")
+        return model
+    except:
+        try:
+            # Coba dengan safe_mode=False
+            model = tf.keras.models.load_model(model_path, compile=False, safe_mode=False)
+            st.sidebar.success("✅ Model loaded (safe_mode=False)")
+            return model
+        except Exception as e:
+            st.sidebar.error(f"❌ Gagal load: {str(e)[:100]}")
+            return None
 
-model = load_model()
-
-# =========================================================
+# ==========================================================
 # LOAD METADATA
-# =========================================================
+# ==========================================================
 @st.cache_data
-def load_metadata():
-    return pd.read_csv(os.path.join(BASE_DIR, "metadata.csv"))
+def load_metadata_df():
+    if os.path.exists("metadata.csv"):
+        return pd.read_csv("metadata.csv")
+    return None
 
-metadata = load_metadata()
+# ==========================================================
+# PREDIKSI
+# ==========================================================
+def predict_accent(audio_path, model):
+    if model is None:
+        return "Model tidak tersedia"
+    
+    try:
+        # Load audio
+        y, sr = librosa.load(audio_path, sr=16000)
+        
+        # MFCC
+        mfcc = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=40)
+        mfcc_mean = np.mean(mfcc.T, axis=0)
+        
+        # Input
+        X = np.expand_dims(mfcc_mean, axis=0)
+        
+        # Predict
+        pred = model.predict(X, verbose=0)
+        
+        # Hasil
+        classes = ["Sunda", "Jawa Tengah", "Jawa Timur", "Yogyakarta", "Betawi"]
+        idx = np.argmax(pred[0])
+        conf = pred[0][idx] * 100
+        
+        return f"{classes[idx]} ({conf:.1f}%)"
+        
+    except Exception as e:
+        return f"Error: {str(e)}"
 
-# =========================================================
-# LABEL MAP (SESUAI DATA KAMU)
-# =========================================================
-label_map = {
-    "Betawi": 0,
-    "Sunda": 1,
-    "Jawa_Tengah": 2,
-    "Jawa_Timur": 3,
-    "YogyaKarta": 4
-}
-id_to_label = {v: k for k, v in label_map.items()}
+# ==========================================================
+# UI
+# ==========================================================
+st.set_page_config(page_title="Deteksi Aksen", page_icon="🎙️", layout="wide")
 
-metadata["label_id"] = metadata["label_aksen"].map(label_map)
+st.title("🎙️ Deteksi Aksen Indonesia")
+st.divider()
 
-# =========================================================
-# FEATURE EXTRACTION
-# =========================================================
-def extract_feature(path):
-    audio, _ = librosa.load(path, sr=SAMPLE_RATE)
-    audio = audio[:SAMPLE_RATE * MAX_LEN]
-    if len(audio) < SAMPLE_RATE * MAX_LEN:
-        audio = np.pad(audio, (0, SAMPLE_RATE * MAX_LEN - len(audio)))
+# Load
+model = load_accent_model()
+metadata = load_metadata_df()
 
-    mfcc = librosa.feature.mfcc(
-        y=audio, sr=SAMPLE_RATE, n_mfcc=N_MFCC
-    )
-    return mfcc.T
+# Layout
+col1, col2 = st.columns([1, 1])
 
-# =========================================================
-# SUPPORT SET
-# =========================================================
-def generate_support_set(df, audio_dir):
-    support_x, support_y = [], []
-
-    for aksen, label_id in label_map.items():
-        samples = df[df["label_id"] == label_id]
-
-        if samples.empty:
-            continue
-
-        samples = samples.sample(
-            n=min(N_SUPPORT, len(samples)),
-            random_state=42
-        )
-
-        for fname in samples["file_name"]:
-            path = os.path.join(audio_dir, fname)
-            if os.path.exists(path):
-                support_x.append(extract_feature(path))
-                support_y.append(label_id)
-
-    return np.array(support_x), np.array(support_y)
-
-# =========================================================
-# PROTOTYPE
-# =========================================================
-def compute_prototypes(model, x, y):
-    emb = model.predict(x, verbose=0)
-    protos, labels = [], np.unique(y)
-
-    for lbl in labels:
-        protos.append(emb[y == lbl].mean(axis=0))
-
-    return np.array(protos), labels
-
-# =========================================================
-# PREDICT
-# =========================================================
-def predict(model, feat, protos, labels):
-    q = model.predict(np.expand_dims(feat, 0), verbose=0)
-    dist = tf.norm(protos - q, axis=1)
-    return labels[np.argmin(dist)], dist.numpy()
-
-# =========================================================
-# STREAMLIT UI
-# =========================================================
-st.title("🎙️ Deteksi Aksen Bahasa (Few-Shot Learning)")
-st.write("Support set dari metadata + audio ZIP (anti gagal deployment)")
-
-zip_file = st.file_uploader(
-    "Upload ZIP berisi audio support set (.wav)",
-    type=["zip"]
-)
-
-query_file = st.file_uploader(
-    "Upload audio query (.wav)",
-    type=["wav"]
-)
-
-if zip_file and query_file:
-    # bersihkan folder temp
-    if os.path.exists(TMP_AUDIO_DIR):
-        shutil.rmtree(TMP_AUDIO_DIR)
-    os.makedirs(TMP_AUDIO_DIR)
-
-    # extract zip
-    with zipfile.ZipFile(zip_file, "r") as zip_ref:
-        zip_ref.extractall(TMP_AUDIO_DIR)
-
-    st.success("✅ Audio support set berhasil dimuat")
-
-    # simpan query
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
-        tmp.write(query_file.read())
-        query_path = tmp.name
-
-    st.audio(query_file)
-
-    with st.spinner("🔍 Memproses audio..."):
-        sx, sy = generate_support_set(metadata, TMP_AUDIO_DIR)
-
-        if len(sx) == 0:
-            st.error("❌ Support set kosong. Nama file ZIP harus sama dengan metadata.")
-            st.stop()
-
-        protos, labels = compute_prototypes(model, sx, sy)
-        feat = extract_feature(query_path)
-        pred, dist = predict(model, feat, protos, labels)
-
-    st.success(f"✅ Aksen terdeteksi: **{id_to_label[pred]}**")
-
-    conf = tf.nn.softmax(-dist).numpy()
-    st.subheader("Confidence")
-    for i, lbl in enumerate(labels):
-        st.write(f"{id_to_label[lbl]} : {conf[i]*100:.2f}%")
-
-    os.remove(query_path)
-
-st.markdown("---")
-st.caption("Few-Shot Learning • Prototypical Network • Skripsi")
+with col1:
+    st.subheader("📥 Input Audio")
+    
+    audio = st.file_uploader("Upload (.wav, .mp3)", type=["wav", "mp3"])
+    
+    if audio:
+        st.audio(audio)
+        
+        if st.button("🚀 Analisis", type="primary", use_container_width=True):
+            if model:
+                with st.spinner("Analyzing..."):
+                    # Save temp
+                    with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as f:
+                        f.write(audio.getbuffer())
+                        path = f.name
+                    
+                    # Predict
+                    result = predict_accent(path, model)
+                    
+                    # Show
+                    with col2:
+                        st.subheader("📊 Hasil")
+                        st.success(result)
+                        
+                        st.divider()
+                        
+                        # Metadata
+                        if metadata is not None:
+                            match = metadata[metadata['file_name'] == audio.name]
+                            if not match.empty:
+                                info = match.iloc[0]
+                                st.write(f"🎂 Usia: {info.get('usia', '-')} Tahun")
+                                st.write(f"🚻 Gender: {info.get('gender', '-')}")
+                                st.write(f"🗺️ Provinsi: {info.get('provinsi', '-')}")
+                    
+                    # Cleanup
+                    os.unlink(path)
+            else:
+                st.error("Model tidak tersedia")
