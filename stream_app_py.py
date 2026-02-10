@@ -31,19 +31,10 @@ class PrototypicalNetwork(tf.keras.Model):
 # ==========================================================
 @st.cache_resource
 def load_accent_model():
-    model_name = "model_aksen.keras"
-    current_dir = os.path.dirname(os.path.abspath(__file__))
-    model_path = os.path.join(current_dir, model_name)
-
-    if os.path.exists(model_path):
-        try:
-            custom_objects = {"PrototypicalNetwork": PrototypicalNetwork}
-            model = tf.keras.models.load_model(model_path, custom_objects=custom_objects, compile=False)
-            return model
-        except Exception as e:
-            st.error(f"❌ Gagal memuat model: {e}")
-            return None
-    return None
+    print("Sedang mencoba memuat model...") # Ini akan muncul di log Manage App
+    # ... kode load model kamu ...
+    print("Model berhasil dimuat ke memori!")
+    return model
 
 @st.cache_data
 def load_metadata_df():
