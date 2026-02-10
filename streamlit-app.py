@@ -8,6 +8,23 @@ import os
 # ==========================================================
 # LOAD MODEL PALING SEDERHANA
 # ==========================================================
+@tf.keras.utils.register_keras_serializable(package="Custom")
+class PrototypicalNetwork(tf.keras.Model):
+    def __init__(self, embedding_model=None, **kwargs):
+        super().__init__(**kwargs)
+        self.embedding_model = embedding_model
+
+    def call(self, inputs):
+        return self.embedding_model(inputs)
+
+    def get_config(self):
+        config = super().get_config()
+        config.update({
+            "embedding_model": self.embedding_model
+        })
+        return config
+
+
 @st.cache_resource
 def load_accent_model():
     import tensorflow as tf
@@ -128,4 +145,5 @@ with col1:
                     os.unlink(path)
             else:
                 st.error("Model tidak tersedia")
+
 
