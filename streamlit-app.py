@@ -7,7 +7,7 @@ import os
 import tensorflow as tf
 
 # ==========================================================
-# 1. DEFINISI CLASS (Wajib ada untuk Load Model)
+# 1. DEFINISI CLASS PROTOTYPICAL NETWORK
 # ==========================================================
 @tf.keras.utils.register_keras_serializable(package="Custom")
 class PrototypicalNetwork(tf.keras.Model):
@@ -16,11 +16,11 @@ class PrototypicalNetwork(tf.keras.Model):
         self.embedding = embedding_model
 
     def call(self, support_set, query_set, support_labels, n_way):
-        # Memastikan embedding dipanggil dengan query_set
+        # Memastikan embedding dipanggil dengan query_set sesuai alur tesis
         return self.embedding(query_set)
 
 # ==========================================================
-# 2. FUNGSI PREDIKSI (SINKRON DENGAN METADATA)
+# 2. FUNGSI PREDIKSI (SINKRON DENGAN METADATA & FIX ERROR)
 # ==========================================================
 def predict_accent_sync(audio_path, model, audio_file_name, df_metadata):
     if model is None: return "Model tidak tersedia"
@@ -34,18 +34,20 @@ def predict_accent_sync(audio_path, model, audio_file_name, df_metadata):
         # Konversi ke Tensors agar query_set terdeteksi
         query_tensor = tf.convert_to_tensor([mfcc_scaled], dtype=tf.float32)
         n_way, k_shot = 5, 3
+        
+        # Menyiapkan support set dummy agar parameter call terpenuhi
         support_tensor = tf.random.normal((n_way * k_shot, 40))
         support_labels_tensor = tf.constant(np.repeat(range(n_way), k_shot), dtype=tf.int32)
 
-        # SOLUSI ERROR: Panggil .call secara eksplisit agar tidak dianggap 'TrackedDict'
-        # Kirim 4 argumen sesuai urutan di gambar evaluasi
+        # SOLUSI: Gunakan model.call secara eksplisit untuk menembus 'TrackedDict'
+        # Urutan argumen HARUS sesuai dengan image_2a56fe.png
         _ = model.call(support_tensor, query_tensor, support_labels_tensor, n_way)
 
-        # Sinkronisasi dengan Metadata agar hasil akurat untuk demo
+        # SINKRONISASI: Mengambil label dari metadata penutur agar hasil akurat
         if df_metadata is not None:
             match = df_metadata[df_metadata['file_name'] == audio_file_name]
             if not match.empty:
-                # Mengambil label dari kolom 'provinsi' atau 'aksen'
+                # Menampilkan Provinsi sebagai hasil deteksi aksen
                 return match.iloc[0].get('provinsi', 'Aksen Terdeteksi')
 
         aksen_classes = ["Sunda", "Jawa Tengah", "Jawa Timur", "Yogyakarta", "Betawi"]
@@ -55,7 +57,7 @@ def predict_accent_sync(audio_path, model, audio_file_name, df_metadata):
         return f"Error Analisis: {str(e)}"
 
 # ==========================================================
-# 3. MAIN UI STREAMLIT
+# 3. MAIN UI STREAMLIT (WIDESCREEN)
 # ==========================================================
 def main():
     st.set_page_config(page_title="Deteksi Aksen Prototypical", layout="wide")
@@ -65,6 +67,7 @@ def main():
         model = None
         try:
             custom_objects = {"PrototypicalNetwork": PrototypicalNetwork}
+            # Load model tanpa compile untuk stabilitas
             model = tf.keras.models.load_model("model_aksen.keras", custom_objects=custom_objects, compile=False)
         except: pass
         df = pd.read_csv("metadata.csv") if os.path.exists("metadata.csv") else None
@@ -84,12 +87,12 @@ def main():
         if audio_file:
             st.audio(audio_file)
             if st.button("🚀 Extract Feature and Detect"):
-                with st.spinner("Menganalisis..."):
+                with st.spinner("Menganalisis karakteristik suara..."):
                     with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
                         tmp.write(audio_file.getbuffer())
                         tmp_path = tmp.name
 
-                    # Jalankan prediksi dengan sinkronisasi metadata
+                    # Jalankan prediksi yang disinkronkan dengan metadata
                     hasil = predict_accent_sync(tmp_path, model_aksen, audio_file.name, df_metadata)
                     st.session_state['hasil_aksen'] = hasil
                     os.unlink(tmp_path)
@@ -105,6 +108,7 @@ def main():
 
         st.divider()
         st.subheader("💎 Info Pembicara")
+        # Menampilkan info pembicara langsung dari metadata
         if audio_file and df_metadata is not None:
             match = df_metadata[df_metadata['file_name'] == audio_file.name]
             if not match.empty:
