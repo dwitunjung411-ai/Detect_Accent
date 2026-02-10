@@ -12,7 +12,7 @@ import os
 def load_accent_model_v2():
     import tensorflow as tf
     
-    model_path = "model_embedding_aksen.keras"
+    model_path = "model_aksen.keras"
     
     # Cek file ada atau tidak
     if not os.path.exists(model_path):
@@ -179,4 +179,5 @@ with col1:
 with col2:
     if not audio:
         st.info("👆 Upload file audio di sebelah kiri untuk memulai")
+
 
