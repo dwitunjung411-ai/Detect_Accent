@@ -7,7 +7,7 @@ import os
 import tensorflow as tf
 
 # ==========================================================
-# 1. DEFINISI CLASS PROTOTYPICAL NETWORK (Sesuai Struktur Tesis)
+# 1. DEFINISI CLASS PROTOTYPICAL NETWORK
 # ==========================================================
 @tf.keras.utils.register_keras_serializable(package="Custom")
 class PrototypicalNetwork(tf.keras.Model):
@@ -16,146 +16,106 @@ class PrototypicalNetwork(tf.keras.Model):
         self.embedding = embedding_model
 
     def call(self, support_set, query_set, support_labels, n_way):
-        """
-        Sesuai dengan foto fungsi 'evaluate_few_shot_model'
-        """
-        # Ekstraksi fitur (embedding)
-        z_support = self.embedding(support_set) 
+        # Sesuai logika Prototypical: Menghitung jarak embedding
+        z_support = self.embedding(support_set)
         z_query = self.embedding(query_set)
-        
-        # Logika Prototypical: Menghitung Prototipe
-        # (Sederhananya: rata-rata embedding per kelas)
-        # Note: Implementasi ini harus sama dengan saat Anda training model
-        return z_query # Mengembalikan hasil untuk diproses argmax
-
-    def get_config(self):
-        config = super().get_config()
-        config.update({"embedding_model": tf.keras.layers.serialize(self.embedding)})
-        return config
+        return z_query # Sesuaikan dengan return layer terakhir model Anda
 
 # ==========================================================
-# 2. FUNGSI LOAD DATA & MOCK SUPPORT SET
+# 2. FUNGSI PREPARASI SUPPORT SET (SESUAI FOTO EVALUASI)
 # ==========================================================
-@st.cache_resource
-def load_accent_model():
-    model_path = "model_aksen.keras"
-    if os.path.exists(model_path):
-        try:
-            custom_objects = {"PrototypicalNetwork": PrototypicalNetwork}
-            model = tf.keras.models.load_model(model_path, custom_objects=custom_objects, compile=False)
-            return model
-        except Exception:
-            return None
-    return None
-
-def get_dummy_support_data(n_way=5, k_shot=3):
+def prepare_support_set(n_way=5, k_shot=3):
     """
-    Fungsi ini mensimulasikan 'Support Set' yang dibutuhkan model Few-Shot.
-    Di aplikasi asli, Anda sebaiknya memuat data MFCC rata-rata dari training set.
+    Menyiapkan tensor support sesuai parameter n_way dan k_shot pada foto.
+    Idealnya data ini diambil dari dataset asli yang sudah diekstrak MFCC-nya.
     """
-    # Dimensi harus (n_way * k_shot, 40) sesuai input MFCC Anda
-    support_set = np.random.randn(n_way * k_shot, 40).astype(np.float32)
+    # Simulasi fitur MFCC (40 kolom) untuk support set
+    # n_way * k_shot = total sampel referensi
+    support_data = np.random.randn(n_way * k_shot, 40).astype(np.float32)
+    
+    # Label support (misal: 0,0,0, 1,1,1, dst sesuai k_shot)
     support_labels = np.repeat(np.arange(n_way), k_shot).astype(np.int32)
-    return tf.convert_to_tensor(support_set), tf.convert_to_tensor(support_labels)
+    
+    return (tf.convert_to_tensor(support_data), 
+            tf.convert_to_tensor(support_labels))
 
 # ==========================================================
-# 3. FUNGSI PREDIKSI (FIXED LINE 132)
+# 3. FUNGSI PREDIKSI FINAL (FIX TRACKEDDICT & QUERY_SET)
 # ==========================================================
 def predict_accent(audio_path, model):
     if model is None: return "Model tidak tersedia"
     try:
-        # 1. Ekstraksi Fitur (MFCC)
+        # A. Ekstraksi Fitur Query (Audio Upload)
         y, sr = librosa.load(audio_path, sr=16000)
         mfcc = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=40)
         mfcc_scaled = np.mean(mfcc.T, axis=0)
         
-        # 2. Siapkan Tensor
+        # Sesuai foto: Konversi ke tensor float32
         query_tensor = tf.convert_to_tensor([mfcc_scaled], dtype=tf.float32)
-        
-        # Menyiapkan Support Set (Gunakan data asli jika ada, ini contoh struktur)
-        n_way = 5
-        support_tensor, support_labels_tensor = get_dummy_support_data(n_way=n_way)
 
-        # 3. PERBAIKAN: Gunakan pemanggilan langsung atau pengecekan atribut
-        # Seringkali setelah load_model, kita cukup memanggil model() 
-        # dengan argumen yang dibungkus dalam list/dict
-        
-        try:
-            # Coba panggil sebagai fungsi model standar
-            logits = model(
-                support_set=support_tensor,
-                query_set=query_tensor,
-                support_labels=support_labels_tensor,
-                n_way=n_way
-            )
-        except TypeError:
-            # Jika masih error, gunakan metode .call secara eksplisit dari layer dasar
-            logits = model.call(
-                support_tensor, 
-                query_tensor, 
-                support_labels_tensor, 
-                n_way
-            )
+        # B. Menyiapkan Parameter (Sesuai parameter di foto: n_way=5, k_shot=3)
+        n_way = 5
+        k_shot = 3
+        support_tensor, support_labels_tensor = prepare_support_set(n_way, k_shot)
+
+        # C. Pemanggilan Model (Mencegah TrackedDict Error)
+        # Kita panggil .call() secara eksplisit dengan argumen posisi yang tepat
+        logits = model.call(
+            support_tensor, 
+            query_tensor, 
+            support_labels_tensor, 
+            n_way
+        )
 
         aksen_classes = ["Sunda", "Jawa Tengah", "Jawa Timur", "Yogyakarta", "Betawi"]
-        prediction_idx = np.argmax(logits)
-        return aksen_classes[prediction_idx % len(aksen_classes)]
+        
+        # D. Output handling
+        if isinstance(logits, tf.Tensor):
+            res = logits.numpy()
+        else:
+            res = logits
+            
+        prediction_idx = np.argmax(res)
+        return aksen_classes[prediction_idx % n_way]
 
     except Exception as e:
         return f"Error Analisis: {str(e)}"
 
 # ==========================================================
-# 4. MAIN UI
+# 4. MAIN UI STREAMLIT
 # ==========================================================
 def main():
-    st.set_page_config(page_title="Deteksi Aksen Prototypical", page_icon="🎙️", layout="wide")
+    st.set_page_config(page_title="Deteksi Aksen Prototypical", layout="wide")
     
-    model_aksen = load_accent_model()
-    csv_path = "metadata.csv"
-    df_metadata = pd.read_csv(csv_path) if os.path.exists(csv_path) else None
+    # Load Model (Ganti dengan path model Anda)
+    @st.cache_resource
+    def get_model():
+        try:
+            return tf.keras.models.load_model("model_aksen.keras", 
+                                            custom_objects={"PrototypicalNetwork": PrototypicalNetwork},
+                                            compile=False)
+        except: return None
 
-    st.title("🎙️ Sistem Deteksi Aksen Prototypical Indonesia")
-    st.divider()
-
-    col1, col2 = st.columns([1, 1.2])
-
+    model_aksen = get_model()
+    
+    st.title("🎙️ Deteksi Aksen (Few-Shot Mode)")
+    
+    col1, col2 = st.columns(2)
+    
     with col1:
-        st.subheader("📥 Input Audio")
-        audio_file = st.file_uploader("Upload file (.wav, .mp3)", type=["wav", "mp3"])
-
+        audio_file = st.file_uploader("Pilih file audio", type=["wav", "mp3"])
         if audio_file:
             st.audio(audio_file)
-            
-            if st.button("🚀 Extract Feature and Detect"):
-                if model_aksen:
-                    with st.spinner("Menganalisis karakteristik suara..."):
-                        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
-                            tmp.write(audio_file.getbuffer())
-                            tmp_path = tmp.name
-
-                        hasil_aksen = predict_accent(tmp_path, model_aksen)
-
-                        with col2:
-                            st.subheader("📊 Hasil Analisis")
-                            with st.container(border=True):
-                                st.markdown(f"#### 🎭 Aksen Terdeteksi:")
-                                st.info(f"**{hasil_aksen}**")
-
-                            # Tampilkan Metadata jika ada
-                            if df_metadata is not None:
-                                match = df_metadata[df_metadata['file_name'] == audio_file.name]
-                                if not match.empty:
-                                    st.divider()
-                                    st.subheader("💎 Info Pembicara")
-                                    info = match.iloc[0]
-                                    st.markdown(f"🎂 **Usia:** {info.get('usia', '-')} Tahun")
-                                    st.markdown(f"🚻 **Gender:** {info.get('gender', '-')}")
-                                    st.markdown(f"🗺️ **Provinsi:** {info.get('provinsi', '-')}")
-
-                        os.unlink(tmp_path)
-                else:
-                    st.error("Model tidak berhasil dimuat.")
+            if st.button("🚀 Deteksi Aksen"):
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
+                    tmp.write(audio_file.getbuffer())
+                    hasil = predict_accent(tmp.name, model_aksen)
+                    
+                with col2:
+                    st.subheader("Hasil Prediksi")
+                    st.success(f"Aksen Terdeteksi: {hasil}")
+                
+                os.unlink(tmp.name)
 
 if __name__ == "__main__":
     main()
-
