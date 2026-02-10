@@ -14,8 +14,9 @@ def register_custom_objects():
     
     @keras.saving.register_keras_serializable(package="Custom")
     class PrototypicalNetwork(keras.layers.Layer):
-        def __init__(self, num_classes=5, embedding_dim=128, **kwargs):
+        def __init__(self, embedding_model=None, num_classes=5, embedding_dim=128, **kwargs):
             super(PrototypicalNetwork, self).__init__(**kwargs)
+            self.embedding_model = embedding_model
             self.num_classes = num_classes
             self.embedding_dim = embedding_dim
         
@@ -28,6 +29,7 @@ def register_custom_objects():
         def get_config(self):
             config = super(PrototypicalNetwork, self).get_config()
             config.update({
+                'embedding_model': self.embedding_model,
                 'num_classes': self.num_classes,
                 'embedding_dim': self.embedding_dim
             })
