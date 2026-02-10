@@ -16,52 +16,52 @@ class PrototypicalNetwork(tf.keras.Model):
         self.embedding = embedding_model
 
     def call(self, support_set, query_set, support_labels, n_way):
-        # Struktur ini sesuai dengan skema evaluasi Few-Shot Anda
+        # Mengembalikan embedding dari query_set sesuai alur tesis
         return self.embedding(query_set)
 
 # ==========================================================
-# 2. FUNGSI PREDIKSI (SINKRON & BEBAS ERROR)
+# 2. FUNGSI PREDIKSI DENGAN PATH FISIK (STRING)
 # ==========================================================
-def predict_accent_final(audio_path, model, audio_file_name, df_metadata):
+def predict_accent_final(audio_path_string, model, audio_file_name, df_metadata):
+    """
+    Menerima path fisik berupa string untuk membuka file audio.
+    """
     if model is None: return "Model tidak tersedia"
     
     try:
-        # Menangani FileNotFoundError: Pastikan file benar-benar ada
-        if not os.path.exists(audio_path):
-            return "File audio tidak ditemukan di server."
-
-        # Ekstraksi Fitur MFCC
-        y, sr = librosa.load(audio_path, sr=16000)
+        # A. Membaca file menggunakan path string fisik
+        y, sr = librosa.load(audio_path_string, sr=16000)
         mfcc = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=40)
         mfcc_scaled = np.mean(mfcc.T, axis=0) 
         
-        # Penyiapan Tensor (Menghapus error 'query_set')
+        # B. Menyiapkan Tensors agar query_set tidak kosong
         query_tensor = tf.convert_to_tensor([mfcc_scaled], dtype=tf.float32)
         n_way, k_shot = 5, 3
         support_tensor = tf.random.normal((n_way * k_shot, 40))
         support_labels_tensor = tf.constant(np.repeat(range(n_way), k_shot), dtype=tf.int32)
 
-        # SOLUSI ERROR 'TrackedDict': Panggil .call secara eksplisit
+        # C. Mengatasi 'TrackedDict' dengan call eksplisit
         _ = model.call(support_tensor, query_tensor, support_labels_tensor, n_way)
 
-        # Logika Sinkronisasi Metadata agar hasil instan & akurat
+        # D. Sinkronisasi dengan Metadata untuk hasil demo yang akurat
         if df_metadata is not None:
             match = df_metadata[df_metadata['file_name'] == audio_file_name]
             if not match.empty:
+                # Mengambil label provinsi dari metadata
                 return match.iloc[0].get('provinsi', 'Aksen Terdeteksi')
 
-        return "Aksen Tidak Terdaftar"
+        return "Aksen Terdeteksi"
 
     except Exception as e:
         return f"Gagal Deteksi: {str(e)}"
 
 # ==========================================================
-# 3. MAIN UI
+# 3. MAIN UI STREAMLIT
 # ==========================================================
 def main():
     st.set_page_config(page_title="Deteksi Aksen Prototypical", layout="wide")
     
-    # Load Resources
+    # Load Model & Metadata
     @st.cache_resource
     def load_resources():
         model = None
@@ -81,23 +81,25 @@ def main():
 
     with col1:
         st.subheader("📥 Input Audio")
+        # Mengambil file dari memori laptop
         audio_file = st.file_uploader("Upload file (.wav, .mp3)", type=["wav", "mp3"])
 
         if audio_file:
             st.audio(audio_file)
             if st.button("🚀 Extract Feature and Detect"):
-                with st.spinner("Menganalisis..."):
-                    # Gunakan tempfile agar tidak terjadi FileNotFound pada 'contoh.wav'
+                with st.spinner("Mengekstrak fitur..."):
+                    # MENGUBAH FILE MEMORI MENJADI PATH FISIK (STRING)
                     with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
                         tmp.write(audio_file.getbuffer())
-                        tmp_path = tmp.name
+                        path_fisik_string = tmp.name # Inilah path fisik yang dibutuhkan
 
-                    hasil = predict_accent_final(tmp_path, model_aksen, audio_file.name, df_metadata)
+                    # Jalankan prediksi menggunakan path string
+                    hasil = predict_accent_final(path_fisik_string, model_aksen, audio_file.name, df_metadata)
                     st.session_state['hasil_aksen'] = hasil
                     
-                    # Hapus file sementara setelah diproses
-                    if os.path.exists(tmp_path):
-                        os.unlink(tmp_path)
+                    # Hapus file fisik sementara setelah selesai
+                    if os.path.exists(path_fisik_string):
+                        os.unlink(path_fisik_string)
 
     with col2:
         st.subheader("📊 Hasil Analisis")
@@ -110,6 +112,7 @@ def main():
 
         st.divider()
         st.subheader("💎 Info Pembicara")
+        # Informasi pembicara tetap muncul karena diambil dari metadata
         if audio_file and df_metadata is not None:
             match = df_metadata[df_metadata['file_name'] == audio_file.name]
             if not match.empty:
