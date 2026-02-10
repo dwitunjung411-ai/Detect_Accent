@@ -25,7 +25,7 @@ class PrototypicalNetwork(tf.keras.Model):
 # ==========================================================
 @st.cache_resource
 def load_resources():
-    model_path = "model_embedding_aksen.keras"
+    model_path = "model_aksen.keras"
     preprocess_path = "preprocess.joblib"
     
     model = None
@@ -176,3 +176,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
