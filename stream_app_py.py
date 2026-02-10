@@ -5,9 +5,11 @@ import librosa
 import tensorflow as tf
 import tempfile
 import os
+import zipfile
+import shutil
 
 # =========================================================
-# KONFIGURASI AUDIO
+# KONFIGURASI
 # =========================================================
 SAMPLE_RATE = 16000
 MAX_LEN = 5
@@ -15,28 +17,7 @@ N_MFCC = 40
 N_SUPPORT = 5
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-
-# =========================================================
-# AUTO DETECT AUDIO DIRECTORY
-# =========================================================
-CANDIDATE_AUDIO_DIRS = [
-    os.path.join(BASE_DIR, "audio"),
-    os.path.join(BASE_DIR, "data", "audio"),
-    os.path.join(BASE_DIR, "data"),
-    BASE_DIR
-]
-
-AUDIO_DIR = None
-for d in CANDIDATE_AUDIO_DIRS:
-    if os.path.exists(d) and any(f.endswith(".wav") for f in os.listdir(d)):
-        AUDIO_DIR = d
-        break
-
-if AUDIO_DIR is None:
-    st.error("❌ Folder audio tidak ditemukan otomatis.")
-    st.stop()
-
-st.success(f"📁 Audio folder terdeteksi: `{AUDIO_DIR}`")
+TMP_AUDIO_DIR = os.path.join(BASE_DIR, "_audio_tmp")
 
 # =========================================================
 # LOAD MODEL
@@ -60,11 +41,8 @@ def load_metadata():
 metadata = load_metadata()
 
 # =========================================================
-# METADATA CONFIG (SESUAI FILE KAMU)
+# LABEL MAP (SESUAI DATA KAMU)
 # =========================================================
-AKSEN_COL = "label_aksen"
-FILENAME_COL = "file_name"
-
 label_map = {
     "Betawi": 0,
     "Sunda": 1,
@@ -72,13 +50,9 @@ label_map = {
     "Jawa_Timur": 3,
     "YogyaKarta": 4
 }
-
 id_to_label = {v: k for k, v in label_map.items()}
 
-metadata["label_id"] = metadata[AKSEN_COL].map(label_map)
-metadata["file_path"] = metadata[FILENAME_COL].apply(
-    lambda x: os.path.join(AUDIO_DIR, x)
-)
+metadata["label_id"] = metadata["label_aksen"].map(label_map)
 
 # =========================================================
 # FEATURE EXTRACTION
@@ -97,14 +71,11 @@ def extract_feature(path):
 # =========================================================
 # SUPPORT SET
 # =========================================================
-def generate_support_set(df):
+def generate_support_set(df, audio_dir):
     support_x, support_y = [], []
 
     for aksen, label_id in label_map.items():
-        samples = df[
-            (df["label_id"] == label_id) &
-            (df["file_path"].apply(os.path.exists))
-        ]
+        samples = df[df["label_id"] == label_id]
 
         if samples.empty:
             continue
@@ -114,9 +85,11 @@ def generate_support_set(df):
             random_state=42
         )
 
-        for path in samples["file_path"]:
-            support_x.append(extract_feature(path))
-            support_y.append(label_id)
+        for fname in samples["file_name"]:
+            path = os.path.join(audio_dir, fname)
+            if os.path.exists(path):
+                support_x.append(extract_feature(path))
+                support_y.append(label_id)
 
     return np.array(support_x), np.array(support_y)
 
@@ -144,22 +117,42 @@ def predict(model, feat, protos, labels):
 # STREAMLIT UI
 # =========================================================
 st.title("🎙️ Deteksi Aksen Bahasa (Few-Shot Learning)")
-st.caption("Prototypical Network • Support otomatis dari metadata")
+st.write("Support set dari metadata + audio ZIP (anti gagal deployment)")
 
-uploaded = st.file_uploader("Upload audio (.wav)", type=["wav"])
+zip_file = st.file_uploader(
+    "Upload ZIP berisi audio support set (.wav)",
+    type=["zip"]
+)
 
-if uploaded:
+query_file = st.file_uploader(
+    "Upload audio query (.wav)",
+    type=["wav"]
+)
+
+if zip_file and query_file:
+    # bersihkan folder temp
+    if os.path.exists(TMP_AUDIO_DIR):
+        shutil.rmtree(TMP_AUDIO_DIR)
+    os.makedirs(TMP_AUDIO_DIR)
+
+    # extract zip
+    with zipfile.ZipFile(zip_file, "r") as zip_ref:
+        zip_ref.extractall(TMP_AUDIO_DIR)
+
+    st.success("✅ Audio support set berhasil dimuat")
+
+    # simpan query
     with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
-        tmp.write(uploaded.read())
+        tmp.write(query_file.read())
         query_path = tmp.name
 
-    st.audio(uploaded)
+    st.audio(query_file)
 
-    with st.spinner("🔍 Memproses..."):
-        sx, sy = generate_support_set(metadata)
+    with st.spinner("🔍 Memproses audio..."):
+        sx, sy = generate_support_set(metadata, TMP_AUDIO_DIR)
 
         if len(sx) == 0:
-            st.error("❌ Support set kosong. Cek metadata & nama file.")
+            st.error("❌ Support set kosong. Nama file ZIP harus sama dengan metadata.")
             st.stop()
 
         protos, labels = compute_prototypes(model, sx, sy)
@@ -176,4 +169,4 @@ if uploaded:
     os.remove(query_path)
 
 st.markdown("---")
-st.caption("Skripsi • Few-Shot Learning • Prototypical Network")
+st.caption("Few-Shot Learning • Prototypical Network • Skripsi")
