@@ -53,19 +53,16 @@ def load_app_resources():
                                        custom_objects={"PrototypicalNetwork": PrototypicalNetwork}, 
                                        compile=False)
     
-    # --- PERBAIKAN LOGIKA PENGAMBILAN EMBEDDING LAYER ---
-    # Cek apakah ada atribut .embedding, jika tidak ambil layer pertama dengan aman
+    # Ambil sub-model embedding (biasanya di atribut .embedding pada PrototypicalNetwork)
     if hasattr(model, 'embedding'):
-        emb_layer = model.embedding
+        emb_model = model.embedding
     else:
-        try:
-            emb_layer = model.get_layer(index=0)
-        except:
-            emb_layer = model
+        # Jika model fungsional, kita buat model baru yang outputnya adalah layer terakhir embedding
+        emb_model = model
             
-    return le_y, le_g, le_p, scaler_u, ohe, emb_layer
+    return le_y, le_g, le_p, scaler_u, ohe, emb_model
 
-le_y, le_g, le_p, scaler_u, ohe, emb_layer = load_app_resources()
+le_y, le_g, le_p, scaler_u, ohe, emb_model = load_app_resources()
 
 @st.cache_data
 def get_class_prototypes():
@@ -103,13 +100,14 @@ if up_file:
                 m_b = np.tile(m_v, (u_feat.shape[0], u_feat.shape[1], 1))
                 final_in = np.expand_dims(np.concatenate([u_feat, m_b], axis=-1), axis=0).astype(np.float32)
                 
-                # Inference
+                # --- PERBAIKAN: Gunakan .predict() daripada memanggil objek langsung ---
                 try:
-                    # Menggunakan metode predict atau call yang lebih aman
-                    query_emb = emb_layer(tf.constant(final_in))
-                    query_vec = tf.reshape(query_emb, [-1]).numpy()
+                    # predict() mengembalikan numpy array, lebih aman daripada memanggil layer langsung
+                    query_emb = emb_model.predict(final_in)
+                    query_vec = query_emb.flatten() # Ratakan menjadi vektor 1D
                     
-                    # Klasifikasi Jarak
+                    # Pastikan dimensi cocok dengan prototypes
+                    # Jika prototypes.npy disimpan sebagai (n_classes, n_dims)
                     dists = np.linalg.norm(class_prototypes - query_vec, axis=1)
                     idx = np.argmin(dists)
                     
