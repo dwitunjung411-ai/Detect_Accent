@@ -54,7 +54,7 @@ def load_app_resources():
     scaler_u = StandardScaler().fit(df['usia'].values.reshape(-1, 1))
     ohe = OneHotEncoder(handle_unknown="ignore", sparse_output=False).fit(df[['gender', 'provinsi']])
 
-    m_path = "model_detect_aksen.keras"
+    m_path = "model_aksen.keras"
     model = tf.keras.models.load_model(m_path, custom_objects={"PrototypicalNetwork": PrototypicalNetwork}, compile=False)
     return le_y, le_g, le_p, scaler_u, ohe, model
 
@@ -126,3 +126,4 @@ if up_file:
                     st.error(f"Gagal melakukan klasifikasi: {str(e)}")
             
             if os.path.exists("temp.wav"): os.remove("temp.wav")
+
