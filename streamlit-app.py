@@ -70,7 +70,7 @@ def main():
     def load_resources():
         model = None
         # Menggunakan nama model sesuai instruksi terbaru Anda
-        model_path = "model_detect_aksen.keras" 
+        model_path = "model_aksen.keras" 
         try:
             custom_objects = {"PrototypicalNetwork": PrototypicalNetwork}
             model = tf.keras.models.load_model(model_path, custom_objects=custom_objects, compile=False)
@@ -137,3 +137,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
