@@ -58,7 +58,7 @@ def load_app_resources():
 
     # Load Model (Gunakan nama model_detect_aksen.keras sesuai instruksi)
     model = tf.keras.models.load_model(
-        "model_detect_aksen.keras", 
+        "model_aksen.keras", 
         custom_objects={"PrototypicalNetwork": PrototypicalNetwork}, 
         compile=False
     )
@@ -147,3 +147,4 @@ if up_file:
                 st.error("Gagal mengekstrak fitur audio.")
             
             if os.path.exists("temp.wav"): os.remove("temp.wav")
+
