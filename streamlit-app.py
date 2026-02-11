@@ -53,7 +53,7 @@ def load_app_resources():
     ohe = OneHotEncoder(handle_unknown="ignore", sparse_output=False).fit(df[['gender', 'provinsi']])
 
     # Load Model (model_detect_aksen.keras)
-    m_path = "model_detect_aksen.keras"
+    m_path = "model_aksen.keras"
     model = tf.keras.models.load_model(m_path, 
                                        custom_objects={"PrototypicalNetwork": PrototypicalNetwork}, 
                                        compile=False)
@@ -126,3 +126,4 @@ if up_file:
             # Hapus file sementara
             if os.path.exists("temp_input.wav"): 
                 os.remove("temp_input.wav")
+
