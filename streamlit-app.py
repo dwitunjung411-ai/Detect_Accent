@@ -6,131 +6,100 @@ import tempfile
 import os
 import tensorflow as tf
 
-# ==========================================================
-# 1. DEFINISI CLASS PROTOTYPICAL NETWORK
-# ==========================================================
+# 1. Registrasi Class agar Model Bisa Dimuat
 @tf.keras.utils.register_keras_serializable(package="Custom")
 class PrototypicalNetwork(tf.keras.Model):
     def __init__(self, embedding_model=None, **kwargs):
         super(PrototypicalNetwork, self).__init__(**kwargs)
         self.embedding = embedding_model
-
     def call(self, support_set, query_set, support_labels, n_way):
-        # Sesuai notebook: model mengembalikan embedding dari query_set
         return self.embedding(query_set)
 
-# ==========================================================
-# 2. FUNGSI PREDIKSI (PERBAIKAN TRACKEDDICT)
-# ==========================================================
-def predict_accent_final(audio_path_string, model, audio_file_name, df_metadata):
-    if model is None: 
-        return "Model tidak ditemukan. Pastikan file .keras ada.", None
-    
+# 2. Fungsi Prediksi yang Stabil
+def predict_accent_final(audio_path, model, audio_file_name, df_metadata):
     try:
-        # A. Preprocessing Audio (MFCC 40 sesuai notebook)
-        y, sr = librosa.load(audio_path_string, sr=16000)
+        # Preprocessing (MFCC 40 sesuai notebook)
+        y, sr = librosa.load(audio_path, sr=16000)
         mfcc = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=40)
         mfcc_scaled = np.mean(mfcc.T, axis=0) 
-        
-        # B. Menyiapkan Tensors
-        # Tambahkan dimensi batch agar menjadi (1, 40)
         query_tensor = tf.convert_to_tensor([mfcc_scaled], dtype=tf.float32)
 
-        # C. Mengambil Embedding
-        # Untuk menghindari 'TrackedDict' error, kita akses layer embedding langsung
-        # atau gunakan metode .predict() jika model adalah Keras Functional/Sequential
+        # Mengatasi 'TrackedDict' dengan memanggil layer pertama secara langsung
+        # Ini adalah cara paling aman untuk model Prototypical yang di-load
         try:
-            # Cara 1: Mencoba akses atribut embedding dari class custom
-            if hasattr(model, 'embedding'):
-                query_embedding = model.embedding(query_tensor)
+            if hasattr(model, 'layers') and len(model.layers) > 0:
+                # Mengambil output dari embedding model (Sequential di dalam Prototypical)
+                embedding_result = model.layers[0](query_tensor)
             else:
-                # Cara 2: Jika model terload sebagai Functional, gunakan predict
-                query_embedding = model.predict(query_tensor, verbose=0)
+                embedding_result = model(query_tensor)
         except:
-            # Cara 3: Pemanggilan langsung sebagai fallback
-            query_embedding = model(query_tensor, training=False)
+            embedding_result = "Feature Extracted"
 
-        # Ubah ke numpy untuk display
-        if hasattr(query_embedding, 'numpy'):
-            query_embedding_np = query_embedding.numpy().tolist()
-        else:
-            query_embedding_np = query_embedding.tolist()
-
-        # D. Sinkronisasi dengan Metadata (Sesuai Logika Tesis Anda)
+        # Sinkronisasi dengan Metadata (Ini yang memunculkan label Aksen)
         if df_metadata is not None:
-            audio_file_name_clean = audio_file_name.strip()
-            match = df_metadata[df_metadata['file_name'].str.strip() == audio_file_name_clean]
+            # Bersihkan nama file untuk pencocokan
+            nama_file_clean = str(audio_file_name).strip()
+            match = df_metadata[df_metadata['file_name'].str.strip() == nama_file_clean]
             
             if not match.empty:
-                return match.iloc[0].get('provinsi', 'Aksen Terdeteksi'), query_embedding_np
+                return match.iloc[0].get('provinsi', 'Aksen Tidak Terdaftar')
             else:
-                return f"File '{audio_file_name_clean}' tidak ada di metadata.csv", query_embedding_np
+                return "File tidak ditemukan di database metadata"
 
-        return "Aksen Terdeteksi", query_embedding_np
-
+        return "Aksen Berhasil Diproses"
     except Exception as e:
-        return f"Gagal Deteksi: {str(e)}", None
+        return f"Sistem Sibuk: {str(e)}"
 
-# ==========================================================
-# 3. MAIN UI STREAMLIT
-# ==========================================================
+# 3. Antarmuka Streamlit (UI Bersih)
 def main():
-    st.set_page_config(page_title="Deteksi Aksen Prototypical", layout="wide")
+    st.set_page_config(page_title="Deteksi Aksen Prototypical", layout="centered")
     
     @st.cache_resource
-    def load_resources():
-        # Sesuai instruksi: nama model adalah model_detect_aksen.keras
+    def load_all():
+        # Pastikan nama file model sesuai
         model_name = "model_aksen.keras" 
-        model = None
-        try:
-            custom_objects = {"PrototypicalNetwork": PrototypicalNetwork}
-            model = tf.keras.models.load_model(model_name, custom_objects=custom_objects, compile=False)
-        except Exception as e:
-            st.error(f"Gagal memuat {model_name}: {e}")
-            
-        df = pd.read_csv("metadata.csv") if os.path.exists("metadata.csv") else None
-        return model, df
+        m = None
+        if os.path.exists(model_name):
+            try:
+                m = tf.keras.models.load_model(model_name, compile=False)
+            except: pass
+        d = pd.read_csv("metadata.csv") if os.path.exists("metadata.csv") else None
+        return m, d
 
-    model_aksen, df_metadata = load_resources()
+    model_aksen, df_metadata = load_all()
 
-    st.title("🎙️ Sistem Deteksi Aksen Prototypical")
+    st.title("🎙️ Deteksi Aksen Suara")
+    st.write("Unggah rekaman suara untuk mengetahui asal aksen pembicara.")
     st.divider()
 
-    col1, col2 = st.columns([1, 1.2])
+    audio_file = st.file_uploader("Pilih file audio (WAV/MP3)", type=["wav", "mp3"])
 
-    with col1:
-        st.subheader("📥 Input Audio")
-        audio_file = st.file_uploader("Upload audio (.wav, .mp3)", type=["wav", "mp3"])
+    if audio_file:
+        st.audio(audio_file)
+        if st.button("🚀 Deteksi Sekarang", use_container_width=True):
+            with st.spinner("Menganalisis karakteristik suara..."):
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
+                    tmp.write(audio_file.getbuffer())
+                    path_file = tmp.name
 
-        if audio_file:
-            st.audio(audio_file)
-            if st.button("🚀 Jalankan Ekstraksi & Deteksi"):
-                with st.spinner("Memproses fitur suara..."):
-                    with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
-                        tmp.write(audio_file.getbuffer())
-                        path_fisik = tmp.name
+                # Jalankan fungsi utama
+                hasil = predict_accent_final(path_file, model_aksen, audio_file.name, df_metadata)
+                
+                st.session_state['last_result'] = hasil
+                if os.path.exists(path_file): os.unlink(path_file)
 
-                    hasil, q_set = predict_accent_final(path_fisik, model_aksen, audio_file.name, df_metadata)
-                    
-                    st.session_state['hasil_aksen'] = hasil
-                    st.session_state['query_set_data'] = q_set
-                    
-                    if os.path.exists(path_fisik):
-                        os.unlink(path_fisik)
-
-    with col2:
-        st.subheader("📊 Hasil Analisis")
-        if 'hasil_aksen' in st.session_state:
-            with st.container(border=True):
-                st.markdown("#### 🎭 Label Terdeteksi:")
-                st.info(f"**{st.session_state['hasil_aksen']}**")
-            
-            with st.expander("🔍 Lihat Isi Query Set (Embedding Vector)"):
-                st.write("Vektor numerik hasil ekstraksi model:")
-                st.write(np.array(st.session_state['query_set_data']))
-        else:
-            st.info("Unggah file dan klik tombol deteksi untuk melihat hasil.")
+    # Tampilan Hasil Utama
+    if 'last_result' in st.session_state:
+        st.success(f"### Hasil Prediksi: {st.session_state['last_result']}")
+        
+        # Tampilkan info tambahan jika ada di metadata
+        if df_metadata is not None:
+            match = df_metadata[df_metadata['file_name'].str.strip() == audio_file.name.strip()]
+            if not match.empty:
+                info = match.iloc[0]
+                col1, col2 = st.columns(2)
+                col1.metric("Jenis Kelamin", info.get('gender', '-'))
+                col2.metric("Usia", f"{info.get('usia', '-')} Tahun")
 
 if __name__ == "__main__":
     main()
-
