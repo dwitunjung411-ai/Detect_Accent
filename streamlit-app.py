@@ -69,19 +69,18 @@ def extract_mfcc(file_path, sr=22050, n_mfcc=40, max_len=174):
             delta2 = delta2[:, :max_len]
         return np.stack([mfcc, delta, delta2], axis=-1)
     except Exception as e:
-        st.error(f"Gagal memproses audio: {e}")
         return None
 
-# --- 3. LOAD DATA & RESOURCE (SOLUSI INDEX ERROR) ---
+# --- 3. LOAD DATA & RESOURCE ---
 @st.cache_resource
 def load_resources():
     csv_path = 'metadata.csv'
     if not os.path.exists(csv_path):
-        st.error("Metadata.csv tidak ditemukan di root folder!")
+        st.error("Metadata.csv tidak ditemukan!")
         st.stop()
 
     df = pd.read_csv(csv_path)
-    # Cleaning data agar tidak IndexError
+    # Proteksi data kosong
     df = df.dropna(subset=['file_name', 'usia', 'gender', 'provinsi', 'label_aksen'])
 
     X_audio_feats, X_meta_raw, y_text = [], [], []
@@ -96,21 +95,21 @@ def load_resources():
                 y_text.append(row['label_aksen'])
 
     if len(X_meta_raw) == 0:
-        st.error("Data audio tidak ditemukan. Cek path file di GitHub!")
+        st.error("Tidak ada data audio yang valid ditemukan!")
         st.stop()
 
     X_audio_feats = np.array(X_audio_feats, dtype=np.float32)
     X_meta_raw = np.array(X_meta_raw, dtype=object)
     y_text = np.array(y_text, dtype=str)
 
-    # Label Encoders
+    # Encoders
     le_y = LabelEncoder().fit(y_text)
-    le_gender = LabelEncoder().fit(X_meta_raw[:, 1])
-    le_provinsi = LabelEncoder().fit(X_meta_raw[:, 2])
-    scaler_usia = StandardScaler().fit(X_meta_raw[:, 0].reshape(-1, 1))
+    le_gender = LabelEncoder().fit(X_meta_raw[:, 1].astype(str))
+    le_provinsi = LabelEncoder().fit(X_meta_raw[:, 2].astype(str))
+    scaler_usia = StandardScaler().fit(X_meta_raw[:, 0].astype(float).reshape(-1, 1))
     ohe = OneHotEncoder(handle_unknown="ignore", sparse_output=False).fit(X_meta_raw[:, 1:3])
 
-    # Final X untuk training/prototypes
+    # Transformasi untuk Prototyping
     u_scaled = scaler_usia.transform(X_meta_raw[:, 0].reshape(-1, 1))
     c_encoded = ohe.transform(X_meta_raw[:, 1:3])
     X_meta = np.hstack([u_scaled, c_encoded]).astype(np.float32)
@@ -128,18 +127,19 @@ def load_resources():
 le_y, le_gender, le_provinsi, scaler_usia, ohe, X_train, y_train = load_resources()
 
 @st.cache_resource
-def load_model():
+def load_trained_model():
     m_path = "model_detect_aksen.keras"
     if not os.path.exists(m_path):
-        st.error("File model_detect_aksen.keras tidak ditemukan!")
+        st.error(f"File {m_path} tidak ditemukan!")
         st.stop()
     return tf.keras.models.load_model(m_path, custom_objects={"PrototypicalNetwork": PrototypicalNetwork}, compile=False)
 
-pn_model = load_model()
+pn_model = load_trained_model()
 
 @st.cache_resource
 def get_prototypes(_model, _X_train, _y_train, n_classes):
-    emb_model = _model.layers[0] if hasattr(_model, 'layers') else _model.embedding
+    # Mengambil sub-model embedding
+    emb_model = _model.embedding if hasattr(_model, 'embedding') else _model.layers[0]
     embeddings = emb_model(_X_train)
     prototypes = []
     for i in range(n_classes):
@@ -151,68 +151,67 @@ class_prototypes = get_prototypes(pn_model, X_train, y_train, len(le_y.classes_)
 
 # --- 4. UI STREAMLIT ---
 st.title("🎙️ Voice Accent Classification")
-st.markdown("Aplikasi ini menggunakan **Prototypical Networks** untuk mendeteksi aksen berdasarkan audio dan data demografis.")
-
 st.sidebar.header("Input Data Pendukung")
-input_usia = st.sidebar.number_input("Usia", min_value=1, max_value=100, value=20)
-input_gender = st.sidebar.selectbox("Gender", le_gender.classes_)
-input_provinsi = st.sidebar.selectbox("Provinsi", le_provinsi.classes_)
 
-uploaded_file = st.file_uploader("Upload File Audio (WAV)", type=["wav"])
+# Input dinamis berdasarkan encoder
+in_usia = st.sidebar.number_input("Usia", 1, 100, 20)
+in_gender = st.sidebar.selectbox("Gender", le_gender.classes_)
+in_provinsi = st.sidebar.selectbox("Provinsi", le_provinsi.classes_)
 
-if uploaded_file is not None:
-    # Simpan file sementara
-    with open("temp_audio.wav", "wb") as f:
+uploaded_file = st.file_uploader("Pilih file audio (WAV)", type=["wav"])
+
+if uploaded_file:
+    # Simpan sementara untuk librosa
+    with open("temp.wav", "wb") as f:
         f.write(uploaded_file.getbuffer())
     
-    st.audio(uploaded_file, format='audio/wav')
+    st.audio(uploaded_file)
     
     if st.button("Klasifikasi Aksen"):
-        with st.spinner('Menganalisis...'):
-            # 1. Ekstrak Fitur Audio
-            audio_feat = extract_mfcc("temp_audio.wav")
+        with st.spinner("Sedang memproses..."):
+            audio_feat = extract_mfcc("temp.wav")
             
             if audio_feat is not None:
-                # 2. Proses Fitur Metadata
-                u_s = scaler_usia.transform([[input_usia]])
-                c_e = ohe.transform([[input_gender, input_provinsi]])
-                meta_feat = np.hstack([u_s, c_e]).astype(np.float32)
+                # Meta processing
+                m_u = scaler_usia.transform([[in_usia]])
+                m_c = ohe.transform([[in_gender, in_provinsi]])
+                meta_feat = np.hstack([m_u, m_c]).astype(np.float32)
                 
-                # 3. Gabungkan (Match Dimension)
-                m_b = np.repeat(meta_feat[np.newaxis, np.newaxis, :], audio_feat.shape[0], axis=0)
-                m_b = np.repeat(m_b, audio_feat.shape[1], axis=1)
-                final_input = np.concatenate([audio_feat, m_b], axis=-1)
-                final_input = np.expand_dims(final_input, axis=0) # Add batch dim
+                # Broadcasting untuk match dimensi input model (H, W, C)
+                # audio_feat shape: (40, 174, 3)
+                m_broad = np.repeat(meta_feat[np.newaxis, np.newaxis, :], audio_feat.shape[0], axis=0)
+                m_broad = np.repeat(m_broad, audio_feat.shape[1], axis=1)
+                
+                # final_input shape: (1, 40, 174, 3 + n_meta)
+                final_input = np.concatenate([audio_feat, m_broad], axis=-1)
+                final_input = np.expand_dims(final_input, axis=0)
 
-                # 4. Prediksi Jarak ke Prototypes
-                emb_model = pn_model.layers[0] if hasattr(pn_model, 'layers') else pn_model.embedding
+                # Inference
+                emb_model = pn_model.embedding if hasattr(pn_model, 'embedding') else pn_model.layers[0]
                 query_embedding = emb_model(final_input)
                 
-                # Hitung Euclidean Distance
-                dists = tf.norm(class_prototypes - query_embedding, axis=1)
-                probs = tf.nn.softmax(-dists).numpy()
+                # --- FIX LINE 210: Konversi ke Numpy & Reshape ---
+                query_vec = tf.reshape(query_embedding, [-1]).numpy()
+                prototypes_np = class_prototypes.numpy()
+                
+                # Hitung Jarak Euclidean
+                dists = np.linalg.norm(prototypes_np - query_vec, axis=1)
                 pred_idx = np.argmin(dists)
                 
-                # 5. Tampilkan Hasil
+                # Hitung skor kepercayaan (Softmax terbalik)
+                conf_scores = tf.nn.softmax(-dists).numpy()
+
                 st.success(f"### Hasil Prediksi: Aksen {le_y.classes_[pred_idx]}")
                 
-                # Tampilkan Probabilitas
-                chart_data = pd.DataFrame({
+                # Visualisasi
+                chart_df = pd.DataFrame({
                     'Aksen': le_y.classes_,
-                    'Confidence': probs
-                })
-                st.bar_chart(chart_data.set_index('Aksen'))
-            
-            # Hapus file temp
-            if os.path.exists("temp_audio.wav"):
-                os.remove("temp_audio.wav")
-
----
-### Apa yang baru di kode ini?
-1.  **Input Sidebar**: Saya menambahkan `selectbox` dan `number_input` yang datanya diambil langsung dari `LabelEncoder`. Jadi, pilihan gender dan provinsi akan otomatis mengikuti isi `metadata.csv` Anda.
-2.  **Logic Prediksi**: Kode ini menghitung jarak antara *embedding* suara yang di-upload dengan *prototypes* yang sudah dihitung dari data training.
-3.  **Visualisasi**: Hasil klasifikasi ditampilkan dengan Bar Chart untuk melihat tingkat kepercayaan (confidence) model terhadap tiap aksen.
-4.  **Kerapihan**: File audio sementara otomatis dihapus setelah diproses untuk menjaga efisiensi storage di Streamlit Cloud.
-
-**Langkah selanjutnya:**
-Coba push kode ini ke GitHub Anda. Pastikan file `metadata.csv` dan `model_detect_aksen.keras` berada di folder yang sama dengan file `.py` ini. Apakah ada bagian dari visualisasi hasil yang ingin Anda ubah?
+                    'Confidence Score': conf_scores
+                }).set_index('Aksen')
+                st.bar_chart(chart_df)
+            else:
+                st.error("Gagal mengekstrak fitur dari file audio tersebut.")
+        
+        # Bersihkan file temp
+        if os.path.exists("temp.wav"):
+            os.remove("temp.wav")
