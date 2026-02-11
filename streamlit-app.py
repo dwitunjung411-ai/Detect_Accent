@@ -80,7 +80,7 @@ def main():
     @st.cache_resource
     def load_resources():
         # Sesuai instruksi: nama model adalah model_detect_aksen.keras
-        model_name = "model_detect_aksen.keras" 
+        model_name = "model_aksen.keras" 
         model = None
         try:
             custom_objects = {"PrototypicalNetwork": PrototypicalNetwork}
@@ -133,3 +133,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
