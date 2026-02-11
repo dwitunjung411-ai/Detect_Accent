@@ -7,7 +7,7 @@ import os
 from sklearn.preprocessing import LabelEncoder, StandardScaler, OneHotEncoder
 import keras
 
-# --- 1. REGISTRASI CLASS CUSTOM (DENGAN PERBAIKAN CALL) ---
+# --- 1. REGISTRASI CLASS CUSTOM ---
 @keras.saving.register_keras_serializable()
 class PrototypicalNetwork(tf.keras.Model):
     def __init__(self, embedding_model=None, **kwargs):
@@ -15,7 +15,7 @@ class PrototypicalNetwork(tf.keras.Model):
         self.embedding = embedding_model
 
     def call(self, x, training=False):
-        # Solusi untuk TrackedDict: mencari layer asli di dalam dictionary internal
+        # Penanganan TrackedDict agar model callable
         emb_layer = self.embedding
         if isinstance(emb_layer, dict):
             emb_layer = emb_layer.get('embedding', list(emb_layer.values())[0])
@@ -57,7 +57,7 @@ def load_app_resources():
     scaler_u = StandardScaler().fit(df['usia'].values.reshape(-1, 1))
     ohe = OneHotEncoder(handle_unknown="ignore", sparse_output=False).fit(df[['gender', 'provinsi']])
 
-    # Nama file model harus sesuai instruksi: model_detect_aksen.keras
+    # Sesuai instruksi: model_detect_aksen.keras
     model = tf.keras.models.load_model(
         "model_aksen.keras", 
         custom_objects={"PrototypicalNetwork": PrototypicalNetwork}, 
@@ -75,25 +75,34 @@ def load_prototypes():
 
 class_prototypes = load_prototypes()
 
-# --- 4. FUNGSI INFERENSI (SOLUSI SHAPE MISMATCH 11 vs 128) ---
+# --- 4. FUNGSI INFERENSI (PENANGANAN SHAPE 11 VS 128) ---
 def get_embedding_safely(model, x_input):
     x_tensor = tf.convert_to_tensor(x_input, dtype=tf.float32)
     try:
-        # Gunakan predict() untuk stabilitas
-        res = model.predict(x_tensor, verbose=0)
+        # Menggunakan call langsung untuk mendapatkan embedding asli
+        res = model(x_tensor, training=False)
         
-        # PENTING: Ringkas dimensi (Global Average Pooling)
-        # Ini memaksa output model kembali menjadi dimensi fitur (misal: 128)
-        # dan membuang dimensi temporal (174) dan MFCC (40)
-        if len(res.shape) > 2:
-            res = np.mean(res, axis=(1, 2))
+        if hasattr(res, 'numpy'):
+            res = res.numpy()
             
-        return np.reshape(res, (1, -1))
-    except:
-        res = model(x_tensor, training=False).numpy()
-        if len(res.shape) > 2:
+        # PENTING: Global Average Pooling jika output masih 4D (Batch, H, W, C)
+        if len(res.shape) == 4:
             res = np.mean(res, axis=(1, 2))
-        return np.reshape(res, (1, -1))
+        
+        # Pastikan hasil akhirnya datar (1, 128)
+        res = res.reshape(1, -1)
+        
+        # Jika dimensi masih 11, berarti model memotong fitur audio
+        if res.shape[1] != 128:
+             # Paksa pengecekan layer internal jika model dibungkus
+             if hasattr(model, 'embedding'):
+                 res = model.embedding(x_tensor, training=False).numpy()
+                 if len(res.shape) == 4: res = np.mean(res, axis=(1, 2))
+                 res = res.reshape(1, -1)
+        
+        return res
+    except Exception as e:
+        raise Exception(f"Gagal ekstraksi embedding: {str(e)}")
 
 # --- 5. UI STREAMLIT ---
 st.title("🎙️ Accent Detection System")
@@ -104,13 +113,13 @@ with st.sidebar:
     g_in = st.selectbox("Gender", le_g.classes_)
     p_in = st.selectbox("Provinsi", le_p.classes_)
 
-up_file = st.file_uploader("Upload Audio (WAV)", type=["wav"])
+up_file = st.file_uploader("Upload Audio Rekaman (WAV)", type=["wav"])
 
 if up_file:
     st.audio(up_file)
     if st.button("Deteksi Sekarang"):
         if class_prototypes is None:
-            st.error("⚠️ File 'prototypes.npy' tidak ditemukan di GitHub!")
+            st.error("⚠️ File 'prototypes.npy' tidak ditemukan!")
             st.stop()
             
         with st.spinner("Menganalisis..."):
@@ -118,23 +127,23 @@ if up_file:
             u_feat = extract_mfcc("temp.wav")
             
             if u_feat is not None:
-                # Meta Processing (Broadcasting metadata ke audio)
+                # Meta Processing (Broadcasting 11 fitur metadata)
                 m_v = np.hstack([scaler_u.transform([[u_in]]), ohe.transform([[g_in, p_in]])]).astype(np.float32)
                 m_b = np.tile(m_v, (u_feat.shape[0], u_feat.shape[1], 1))
                 
-                # Gabungkan audio (3 channel) + metadata (8 channel) = 11 channel total
+                # Gabungkan Audio (3 ch) + Metadata (11 ch) = 14 ch input total
                 final_in = np.expand_dims(np.concatenate([u_feat, m_b], axis=-1), axis=0)
                 
                 try:
                     query_vec = get_embedding_safely(main_model, final_in)
                     
-                    # HITUNG JARAK (query_vec.flatten() memastikan shape (128,))
-                    # Kita bandingkan (5, 128) dengan (128,)
+                    # Bandingkan (5, 128) dengan (128,)
                     dists = np.linalg.norm(class_prototypes - query_vec.flatten(), axis=1)
                     idx = np.argmin(dists)
                     
                     st.success(f"### Hasil Prediksi: Aksen {le_y.classes_[idx]}")
                     
+                    # Chart Confidence
                     conf = tf.nn.softmax(-dists).numpy()
                     st.bar_chart(pd.DataFrame({'Confidence': conf}, index=le_y.classes_))
                 except Exception as e:
