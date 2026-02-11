@@ -6,7 +6,6 @@ import soundfile as sf
 import tensorflow as tf
 import os
 import tempfile
-import matplotlib.pyplot as plt
 from sklearn.preprocessing import LabelEncoder, OneHotEncoder, StandardScaler
 from sklearn.model_selection import train_test_split
 from tensorflow.keras.models import Model
@@ -155,3 +154,4 @@ class_prototypes = get_prototypes(pn_model, X_train, y_train, len(le_y.classes_)
 # --- 5. UI & PREDICTION ---
 st.title("Voice Accent Classification")
 # (Lanjutkan dengan UI Sidebar dan File Uploader Anda...)
+
