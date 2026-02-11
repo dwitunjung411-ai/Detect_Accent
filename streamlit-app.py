@@ -5,7 +5,6 @@ import librosa
 import tensorflow as tf
 import os
 import tempfile
-import matplotlib.pyplot as plt
 from sklearn.preprocessing import LabelEncoder, OneHotEncoder, StandardScaler
 from sklearn.model_selection import train_test_split
 from tensorflow.keras.models import Model
@@ -143,3 +142,4 @@ class_prototypes = compute_prototypes(pn_model, X_train, y_train, len(le_y.class
 # --- 4. UI STREAMLIT ---
 st.title("🎙️ Voice Accent Classification")
 # (Gunakan UI sidebar dan uploader Anda di sini untuk melakukan prediksi)
+
