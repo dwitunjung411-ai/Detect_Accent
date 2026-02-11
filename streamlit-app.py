@@ -2,7 +2,6 @@ import streamlit as st
 import numpy as np
 import librosa
 import soundfile as sf
-import matplotlib.pyplot as plt
 import librosa.display
 import tensorflow as tf
 import os
@@ -196,3 +195,4 @@ if uploaded_file is not None:
 
     # Clean up the temporary file
     os.remove(audio_file_path)
+
