@@ -196,5 +196,3 @@ if uploaded_file is not None:
 
     # Clean up the temporary file
     os.remove(audio_file_path)
-```
-
