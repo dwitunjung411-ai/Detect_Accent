@@ -63,7 +63,7 @@ def load_app_resources():
 
     # Nama file model harus sesuai: model_detect_aksen.keras
     model = tf.keras.models.load_model(
-        "model_detect_aksen.keras", 
+        "model_aksen.keras", 
         custom_objects={"PrototypicalNetwork": PrototypicalNetwork}, 
         compile=False
     )
@@ -142,3 +142,4 @@ if up_file:
             
             # Bersihkan file sementara
             if os.path.exists("temp.wav"): os.remove("temp.wav")
+
