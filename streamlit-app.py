@@ -75,15 +75,16 @@ def load_prototypes():
 
 class_prototypes = load_prototypes()
 
-# --- 4. FUNGSI INFERENSI (SOLUSI SHAPE MISMATCH) ---
+# --- 4. FUNGSI INFERENSI (SOLUSI SHAPE MISMATCH 11 vs 128) ---
 def get_embedding_safely(model, x_input):
     x_tensor = tf.convert_to_tensor(x_input, dtype=tf.float32)
     try:
         # Gunakan predict() untuk stabilitas
         res = model.predict(x_tensor, verbose=0)
         
-        # FIX: Jika model mengembalikan peta fitur spasial, ringkas menjadi vektor
-        # Ini mencegah error dimensi (11,) atau (76560,)
+        # PENTING: Ringkas dimensi (Global Average Pooling)
+        # Ini memaksa output model kembali menjadi dimensi fitur (misal: 128)
+        # dan membuang dimensi temporal (174) dan MFCC (40)
         if len(res.shape) > 2:
             res = np.mean(res, axis=(1, 2))
             
@@ -117,17 +118,18 @@ if up_file:
             u_feat = extract_mfcc("temp.wav")
             
             if u_feat is not None:
-                # Meta Processing (Broadcasting)
+                # Meta Processing (Broadcasting metadata ke audio)
                 m_v = np.hstack([scaler_u.transform([[u_in]]), ohe.transform([[g_in, p_in]])]).astype(np.float32)
                 m_b = np.tile(m_v, (u_feat.shape[0], u_feat.shape[1], 1))
                 
-                # Pastikan audio + metadata digabungkan sebelum masuk model
+                # Gabungkan audio (3 channel) + metadata (8 channel) = 11 channel total
                 final_in = np.expand_dims(np.concatenate([u_feat, m_b], axis=-1), axis=0)
                 
                 try:
                     query_vec = get_embedding_safely(main_model, final_in)
                     
                     # HITUNG JARAK (query_vec.flatten() memastikan shape (128,))
+                    # Kita bandingkan (5, 128) dengan (128,)
                     dists = np.linalg.norm(class_prototypes - query_vec.flatten(), axis=1)
                     idx = np.argmin(dists)
                     
