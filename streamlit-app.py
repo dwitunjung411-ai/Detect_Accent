@@ -39,7 +39,6 @@ def extract_mfcc(file_path, max_len=174):
 # --- 3. LOAD RESOURCE ---
 @st.cache_resource
 def load_app_resources():
-    # Load Metadata
     df = pd.read_csv('metadata.csv').dropna(subset=['usia', 'gender', 'provinsi', 'label_aksen'])
     le_y = LabelEncoder().fit(df['label_aksen'].astype(str))
     le_g = LabelEncoder().fit(df['gender'].astype(str))
@@ -47,22 +46,14 @@ def load_app_resources():
     scaler_u = StandardScaler().fit(df['usia'].values.reshape(-1, 1))
     ohe = OneHotEncoder(handle_unknown="ignore", sparse_output=False).fit(df[['gender', 'provinsi']])
 
-    # Load Model
     m_path = "model_aksen.keras"
+    # Gunakan nama file model_detect_aksen.keras sesuai instruksi Anda
     model = tf.keras.models.load_model(m_path, 
                                        custom_objects={"PrototypicalNetwork": PrototypicalNetwork}, 
                                        compile=False)
-    
-    # Ambil sub-model embedding (biasanya di atribut .embedding pada PrototypicalNetwork)
-    if hasattr(model, 'embedding'):
-        emb_model = model.embedding
-    else:
-        # Jika model fungsional, kita buat model baru yang outputnya adalah layer terakhir embedding
-        emb_model = model
-            
-    return le_y, le_g, le_p, scaler_u, ohe, emb_model
+    return le_y, le_g, le_p, scaler_u, ohe, model
 
-le_y, le_g, le_p, scaler_u, ohe, emb_model = load_app_resources()
+le_y, le_g, le_p, scaler_u, ohe, main_model = load_app_resources()
 
 @st.cache_data
 def get_class_prototypes():
@@ -95,25 +86,36 @@ if up_file:
             u_feat = extract_mfcc("temp_input.wav")
             
             if u_feat is not None:
-                # Meta transform
                 m_v = np.hstack([scaler_u.transform([[u_in]]), ohe.transform([[g_in, p_in]])]).astype(np.float32)
                 m_b = np.tile(m_v, (u_feat.shape[0], u_feat.shape[1], 1))
                 final_in = np.expand_dims(np.concatenate([u_feat, m_b], axis=-1), axis=0).astype(np.float32)
                 
-                # --- PERBAIKAN: Gunakan .predict() daripada memanggil objek langsung ---
+                # --- PERBAIKAN: Akses layer embedding dengan aman ---
                 try:
-                    # predict() mengembalikan numpy array, lebih aman daripada memanggil layer langsung
-                    query_emb = emb_model.predict(final_in)
-                    query_vec = query_emb.flatten() # Ratakan menjadi vektor 1D
+                    # Mencoba mengambil embedding model dari atribut atau layer pertama
+                    if hasattr(main_model, 'embedding'):
+                        # Jika main_model.embedding adalah TrackedDict, coba akses layer di dalamnya
+                        emb_layer = main_model.embedding
+                        if not hasattr(emb_layer, 'predict'):
+                            # Fallback: gunakan model utama jika atribut embedding bermasalah
+                            emb_layer = main_model.layers[0] if len(main_model.layers) > 0 else main_model
+                    else:
+                        emb_layer = main_model.layers[0] if len(main_model.layers) > 0 else main_model
+
+                    # Gunakan fungsi call atau predict tergantung tipe objek
+                    if hasattr(emb_layer, 'predict'):
+                        query_emb = emb_layer.predict(final_in)
+                    else:
+                        query_emb = emb_layer(tf.constant(final_in))
                     
-                    # Pastikan dimensi cocok dengan prototypes
-                    # Jika prototypes.npy disimpan sebagai (n_classes, n_dims)
+                    query_vec = np.array(query_emb).flatten()
+                    
+                    # Klasifikasi Jarak
                     dists = np.linalg.norm(class_prototypes - query_vec, axis=1)
                     idx = np.argmin(dists)
                     
                     st.success(f"### Hasil Prediksi: Aksen {le_y.classes_[idx]}")
                     
-                    # Bar Chart Confidence
                     conf = tf.nn.softmax(-dists).numpy()
                     st.bar_chart(pd.DataFrame({'Confidence': conf}, index=le_y.classes_))
                 except Exception as e:
