@@ -65,8 +65,8 @@ class PrototypicalNetwork(Model):
 @st.cache_resource
 def load_and_preprocess_data():
     # Define path
-    path = '/content/drive/MyDrive/Voice_Skripsi_fix'
-
+     df = pd.read_csv("metadata.csv") if os.path.exists("metadata.csv") else None
+        return model, df
     # Load metadata
     csv_path = os.path.join(path, 'metadata.csv')
     metadata = pd.read_csv(csv_path)
@@ -292,4 +292,5 @@ if uploaded_file is not None:
 
     # Clean up the temporary file
     os.remove(audio_file_path)
+
 
