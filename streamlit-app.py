@@ -1,379 +1,200 @@
+```python
 import streamlit as st
 import numpy as np
-import pandas as pd
 import librosa
-import tempfile
-import os
+import soundfile as sf
+import matplotlib.pyplot as plt
+import librosa.display
 import tensorflow as tf
-import pickle
-import random
+import os
+import tempfile
 
-# ==========================================================
-# CLASS PROTOTYPICAL NETWORK (SESUAI NOTEBOOK)
-# ==========================================================
-@tf.keras.utils.register_keras_serializable(package="Custom")
-class PrototypicalNetwork(tf.keras.Model):
-    def __init__(self, embedding_model=None, **kwargs):
+# Ensure custom objects are registered for model loading
+from tensorflow.keras.models import Model
+from tensorflow.keras import layers
+import keras
+
+@keras.saving.register_keras_serializable()
+class PrototypicalNetwork(Model):
+    def __init__(self, embedding_model, **kwargs):
         super(PrototypicalNetwork, self).__init__(**kwargs)
         self.embedding = embedding_model
-    
-    def call(self, support_set, query_set, support_labels, n_way, training=None):
-        """
-        Args:
-            support_set: (n_support, height, width, channels)
-            query_set: (n_query, height, width, channels)
-            support_labels: (n_support,)
-            n_way: jumlah kelas
-        Returns:
-            logits: (n_query, n_way)
-        """
-        # Embedding untuk support dan query
-        support_embeddings = self.embedding(support_set, training=training)  # (n_support, embed_dim)
-        query_embeddings = self.embedding(query_set, training=training)      # (n_query, embed_dim)
-        
-        # Hitung prototype untuk setiap kelas
+
+    def call(self, support_set, query_set, support_labels, n_way):
+        # Hitung embedding
+        support_embeddings = self.embedding(support_set)
+        query_embeddings = self.embedding(query_set)
+
+        # Hitung prototype per kelas
         prototypes = []
         for i in range(n_way):
-            # Ambil embedding dari kelas i
-            class_embeddings = tf.boolean_mask(
-                support_embeddings,
-                tf.equal(support_labels, i)
-            )
-            # Prototype = rata-rata embedding kelas i
+            mask = tf.equal(support_labels, i)
+            class_embeddings = tf.boolean_mask(support_embeddings, mask)
             prototype = tf.reduce_mean(class_embeddings, axis=0)
             prototypes.append(prototype)
-        
-        prototypes = tf.stack(prototypes)  # (n_way, embed_dim)
-        
-        # Hitung jarak euclidean antara query dan prototypes
-        # query_embeddings: (n_query, embed_dim)
-        # prototypes: (n_way, embed_dim)
-        
-        # Expand dimensions untuk broadcasting
-        query_expanded = tf.expand_dims(query_embeddings, 1)  # (n_query, 1, embed_dim)
-        prototypes_expanded = tf.expand_dims(prototypes, 0)   # (1, n_way, embed_dim)
-        
-        # Hitung jarak euclidean
-        distances = tf.reduce_sum(
-            tf.square(query_expanded - prototypes_expanded),
-            axis=-1
-        )  # (n_query, n_way)
-        
-        # Konversi jarak ke logits (negative distance)
+        prototypes = tf.stack(prototypes)
+
+        # Hitung jarak Euclidean antara query dan prototype
+        distances = []
+        for q in query_embeddings:
+            dist = tf.norm(prototypes - q, axis=1)
+            distances.append(dist)
+        distances = tf.stack(distances)
+
+        # Ubah jarak menjadi probabilitas (softmax over negative distances)
         logits = -distances
-        
         return logits
-    
+
     def get_config(self):
-        config = super().get_config()
-        if self.embedding is not None:
-            config.update({"embedding_model": tf.keras.layers.serialize(self.embedding)})
+        config = super(PrototypicalNetwork, self).get_config()
+        config.update({
+            "embedding_model": keras.saving.serialize_keras_object(self.embedding)
+        })
         return config
 
-# ==========================================================
-# FUNGSI HELPER
-# ==========================================================
-def extract_mfcc(audio_path, sr=22050, n_mfcc=40, max_len=174):
-    """Extract MFCC 3-channel seperti di notebook"""
+    @classmethod
+    def from_config(cls, config):
+        embedding_config = config.pop("embedding_model")
+        embedding_model = keras.saving.deserialize_keras_object(embedding_config)
+        return cls(embedding_model, **config)
+
+# Load the trained model
+model_path = "model_aksen.keras"
+
+@st.cache_resource
+def load_my_model(model_path):
     try:
-        y, sr = librosa.load(audio_path, sr=sr, duration=10)
-        
-        # MFCC utama
-        mfcc = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=n_mfcc)
-        
-        # Delta
-        mfcc_delta = librosa.feature.delta(mfcc)
-        
-        # Delta-delta
-        mfcc_delta2 = librosa.feature.delta(mfcc, order=2)
-        
-        # Padding/truncating
-        def pad_or_truncate(arr, max_len):
-            if arr.shape[1] < max_len:
-                pad_width = max_len - arr.shape[1]
-                arr = np.pad(arr, ((0, 0), (0, pad_width)), mode='constant')
-            else:
-                arr = arr[:, :max_len]
-            return arr
-        
-        mfcc = pad_or_truncate(mfcc, max_len)
-        mfcc_delta = pad_or_truncate(mfcc_delta, max_len)
-        mfcc_delta2 = pad_or_truncate(mfcc_delta2, max_len)
-        
-        # Stack menjadi 3 channels: (n_mfcc, max_len, 3)
-        mfcc_3channel = np.stack([mfcc, mfcc_delta, mfcc_delta2], axis=-1)
-        
-        return mfcc_3channel.astype(np.float32)
-        
+        custom_objects = {"PrototypicalNetwork": PrototypicalNetwork}
+        model = tf.keras.models.load_model(model_path, custom_objects=custom_objects)
+        st.success("Model successfully loaded!")
+        return model
     except Exception as e:
-        print(f"Error extracting MFCC: {e}")
+        st.error(f"Error loading model: {e}")
         return None
 
-def create_episode(data, labels, n_way=5, k_shot=5, q_query=5):
-    """Buat episode untuk few-shot learning"""
-    unique_labels = np.unique(labels)
-    selected_labels = random.sample(list(unique_labels), n_way)
-    
-    support_set = []
-    query_set = []
-    support_labels = []
-    query_labels = []
-    
-    for label in selected_labels:
-        indices = np.where(labels == label)[0]
-        sampled_indices = random.sample(list(indices), k_shot + q_query)
-        
-        support_indices = sampled_indices[:k_shot]
-        query_indices = sampled_indices[k_shot:]
-        
-        support_set.append(data[support_indices])
-        query_set.append(data[query_indices])
-        
-        support_labels.extend([label] * k_shot)
-        query_labels.extend([label] * q_query)
-    
-    support_set = np.vstack(support_set)
-    query_set = np.vstack(query_set)
-    support_labels = np.array(support_labels)
-    query_labels = np.array(query_labels)
-    
-    return support_set, query_set, support_labels, query_labels
+pn_model = load_my_model(model_path)
 
-# ==========================================================
-# LOAD RESOURCES
-# ==========================================================
-@st.cache_resource
-def load_model_and_support():
-    """Load model dan support set"""
+
+# Feature extraction function (copied from notebook)
+def extract_mfcc(file_path, sr=22050, n_mfcc=40, max_len=174):
     try:
-        # Load model
-        custom_objects = {"PrototypicalNetwork": PrototypicalNetwork}
-        model = tf.keras.models.load_model(
-            "model_aksen.keras",
-            custom_objects=custom_objects,
-            compile=False
-        )
-        
-        # Load support set (PENTING!)
-        support_set = np.load('support_set.npy')
-        support_labels = np.load('support_labels.npy')
-        
-        st.sidebar.success("✅ Model & Support Set loaded")
-        return model, support_set, support_labels
-        
+        y, sr = librosa.load(file_path, sr=sr)
+        y = librosa.util.normalize(y)
+        mfcc = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=n_mfcc, n_fft=2048, hop_length=512)
+        delta = librosa.feature.delta(mfcc)
+        delta2 = librosa.feature.delta(mfcc, order=2)
+
+        if mfcc.shape[1] < max_len:
+            pad_width = max_len - mfcc.shape[1]
+            mfcc = np.pad(mfcc, ((0, 0), (0, pad_width)), mode='constant')
+            delta = np.pad(delta, ((0, 0), (0, pad_width)), mode='constant')
+            delta2 = np.pad(delta2, ((0, 0), (0, pad_width)), mode='constant')
+        else:
+            mfcc = mfcc[:, :max_len]
+            delta = delta[:, :max_len]
+            delta2 = delta2[:, :max_len]
+
+        features = np.stack([mfcc, delta, delta2], axis=-1)
+        return features
+
     except Exception as e:
-        st.sidebar.error(f"❌ Error: {str(e)}")
-        return None, None, None
+        st.error(f"Error extracting MFCC from {file_path}: {e}")
+        return None
 
-@st.cache_data
-def load_metadata():
-    """Load metadata CSV"""
-    if os.path.exists("metadata.csv"):
-        return pd.read_csv("metadata.csv")
-    return None
+# Function to prepare audio for prediction
+def process_audio_for_prediction(audio_file_path, metadata_input):
+    mfcc_features = extract_mfcc(audio_file_path)
+    if mfcc_features is None:
+        return None
+    dummy_X_meta = np.zeros((1, 8), dtype=np.float32) # Replace with actual metadata if available
 
-@st.cache_data
-def load_label_encoder():
-    """Load label encoder jika ada"""
-    try:
-        with open('label_encoder.pkl', 'rb') as f:
-            return pickle.load(f)
-    except:
-        # Jika tidak ada, buat manual
-        from sklearn.preprocessing import LabelEncoder
-        le = LabelEncoder()
-        le.classes_ = np.array(['Betawi', 'Jawa Tengah', 'Jawa Timur', 'Sunda', 'Yogyakarta'])
-        return le
+    mfcc_features = np.expand_dims(mfcc_features, axis=0) # Add batch dimension
+    X_meta_broadcast = np.repeat(dummy_X_meta[:, np.newaxis, np.newaxis, :],
+                                 mfcc_features.shape[1],
+                                 axis=1)
+    X_meta_broadcast = np.repeat(X_meta_broadcast,
+                                 mfcc_features.shape[2],
+                                 axis=2)
 
-# ==========================================================
-# PREDIKSI (SESUAI NOTEBOOK)
-# ==========================================================
-def predict_accent(audio_path, model, support_set, support_labels, n_way, label_encoder):
-    """
-    Prediksi aksen menggunakan Prototypical Network
-    Sesuai dengan fungsi detect_accent_from_audio di notebook
-    """
-    try:
-        # 1. Extract MFCC dari audio query
-        mfcc_feat = extract_mfcc(audio_path)
-        
-        if mfcc_feat is None:
-            return "❌ Error extracting features"
-        
-        # 2. Expand batch dimension
-        query_features = np.expand_dims(mfcc_feat, axis=0).astype(np.float32)
-        
-        # 3. Convert to tensors
-        support_tensor = tf.convert_to_tensor(support_set, dtype=tf.float32)
-        query_tensor = tf.convert_to_tensor(query_features, dtype=tf.float32)
-        support_labels_tensor = tf.convert_to_tensor(support_labels, dtype=tf.int32)
-        
-        # 4. Forward pass ke Prototypical Network
-        logits = model.call(
-            support_tensor,
-            query_tensor,
-            support_labels_tensor,
-            n_way
-        )
-        
-        # 5. Get prediction
-        pred_index = tf.argmax(logits, axis=1).numpy()[0]
-        probs = tf.nn.softmax(logits, axis=1).numpy()[0]
-        
-        # 6. Convert index ke label
-        pred_label = label_encoder.inverse_transform([pred_index])[0]
-        confidence = probs[pred_index] * 100
-        
-        # 7. Detail probabilitas
-        detail_lines = []
-        for i, (cls, prob) in enumerate(zip(label_encoder.classes_, probs)):
-            marker = "👉 " if i == pred_index else "   "
-            detail_lines.append(f"{marker}{cls}: {prob*100:.2f}%")
-        
-        detail = "\n".join(detail_lines)
-        
-        result = f"{pred_label} ({confidence:.1f}%)\n\n📊 Detail Probabilitas:\n{detail}"
-        
-        return result
-        
-    except Exception as e:
-        return f"❌ Error: {str(e)}"
+    X_final_pred = np.concatenate([mfcc_features, X_meta_broadcast], axis=-1).astype(np.float32)
+    return X_final_pred
 
-# ==========================================================
-# STREAMLIT UI
-# ==========================================================
-st.set_page_config(
-    page_title="Deteksi Aksen Indonesia",
-    page_icon="🎙️",
-    layout="wide"
-)
+# Pre-compute prototypes for each accent class from training data
+# This assumes X_train and y_train are available from the notebook's execution context.
+# If running as a standalone script, you'd need to load or re-create these.
 
-st.title("🎙️ Sistem Deteksi Aksen Indonesia (Few-Shot Learning)")
-st.write("Aplikasi berbasis *Prototypical Network* untuk klasifikasi aksen daerah.")
-st.divider()
+if 'X_train' in locals() and 'y_train' in locals() and 'le_y' in locals() and pn_model is not None:
+    st.write("Pre-computing class prototypes...")
+    train_embeddings = pn_model.embedding(X_train)
+    class_prototypes = []
+    class_names = le_y.classes_
+    for i in range(len(class_names)):
+        mask = (y_train == i)
+        if np.any(mask):
+            class_embeddings = train_embeddings[mask]
+            prototype = tf.reduce_mean(class_embeddings, axis=0)
+            class_prototypes.append(prototype)
+        else:
+            st.warning(f"No training samples found for class {class_names[i]}")
+            class_prototypes.append(tf.zeros(train_embeddings.shape[-1])) # Placeholder
+    class_prototypes = tf.stack(class_prototypes)
+    st.success("Class prototypes computed.")
+else:
+    st.error("Training data (X_train, y_train, le_y) or model not found in context. Cannot compute prototypes.")
+    st.stop()
 
-# Load resources
-model, support_set, support_labels = load_model_and_support()
-metadata = load_metadata()
-label_encoder = load_label_encoder()
 
-# Sidebar info
-with st.sidebar:
-    st.header("🛸 Status Sistem")
-    
-    if model is not None:
-        st.success("🤖 Model: Aktif")
-    if support_set is not None:
-        st.info(f"📦 Support Set: {support_set.shape[0]} samples")
-    if metadata is not None:
-        st.info(f"📁 Metadata: {len(metadata)} records")
-    
-    st.divider()
-    st.caption("🎓 Few-Shot Learning Project - 2026")
+# Streamlit UI
+st.set_page_config(layout="wide")
+st.title("Voice Accent Classification")
+st.write("Upload an audio file to predict the accent.")
 
-# Main layout
-col1, col2 = st.columns([1, 1.2])
+uploaded_file = st.file_uploader("Choose a WAV audio file", type=["wav"])
 
-with col1:
-    st.subheader("📥 Input Audio")
-    
-    audio_file = st.file_uploader(
-        "Upload file audio (.wav, .mp3)",
-        type=["wav", "mp3"]
-    )
-    
-    if audio_file:
-        st.audio(audio_file)
-        
-        if st.button("🚀 Analisis Aksen", type="primary", use_container_width=True):
-            if model is not None and support_set is not None:
-                with st.spinner("🔍 Menganalisis karakteristik suara..."):
-                    # Save temporary file
-                    with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
-                        tmp.write(audio_file.getbuffer())
-                        tmp_path = tmp.name
-                    
-                    # Predict dengan n_way=5 (5 kelas aksen)
-                    n_way = len(label_encoder.classes_)
-                    hasil = predict_accent(
-                        tmp_path, 
-                        model, 
-                        support_set, 
-                        support_labels, 
-                        n_way, 
-                        label_encoder
-                    )
-                    
-                    # Get metadata
-                    user_info = None
-                    if metadata is not None:
-                        match = metadata[metadata['file_name'] == audio_file.name]
-                        if not match.empty:
-                            user_info = match.iloc[0].to_dict()
-                    
-                    # Display results
-                    with col2:
-                        st.subheader("📊 Hasil Analisis")
-                        
-                        with st.container(border=True):
-                            st.markdown("#### 🎭 Aksen Terdeteksi:")
-                            if "❌" in hasil:
-                                st.error(hasil)
-                            else:
-                                st.text(hasil)
-                        
-                        st.divider()
-                        
-                        st.subheader("💎 Info Pembicara (dari Metadata)")
-                        if user_info:
-                            # Mapping provinsi ke aksen
-                            province_to_accent = {
-                                'DKI Jakarta': 'Betawi',
-                                'Jawa Barat': 'Sunda',
-                                'Jawa Tengah': 'Jawa Tengah',
-                                'Jawa Timur': 'Jawa Timur',
-                                'Yogyakarta': 'Yogyakarta'
-                            }
-                            
-                            actual_province = user_info.get('provinsi', '-')
-                            actual_accent = province_to_accent.get(actual_province, '-')
-                            
-                            col_a, col_b = st.columns(2)
-                            with col_a:
-                                st.metric("🎂 Usia", f"{user_info.get('usia', '-')} Tahun")
-                                st.metric("🚻 Gender", user_info.get('gender', '-'))
-                            with col_b:
-                                st.metric("🗺️ Provinsi", actual_province)
-                                st.metric("✅ Aksen Sebenarnya", actual_accent)
-                            
-                            # Check if correct
-                            if actual_accent != '-':
-                                predicted_accent = hasil.split('(')[0].strip()
-                                if actual_accent == predicted_accent:
-                                    st.success("🎯 Prediksi BENAR!")
-                                else:
-                                    st.warning(f"⚠️ Prediksi tidak sesuai! Seharusnya: **{actual_accent}**")
-                        else:
-                            st.info("🕵️ File tidak terdaftar dalam metadata")
-                    
-                    # Cleanup
-                    try:
-                        os.unlink(tmp_path)
-                    except:
-                        pass
-            else:
-                st.error("⚠️ Model atau Support Set tidak tersedia")
+if uploaded_file is not None:
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp_file:
+        tmp_file.write(uploaded_file.getvalue())
+        audio_file_path = tmp_file.name
+
+    st.audio(audio_file_path, format='audio/wav')
+
+    st.subheader("Processing Audio...")
+    # For the UI, we're not asking for metadata explicitly for this prediction demo.
+    # The process_audio_for_prediction uses a dummy metadata_input.
+    processed_audio_input = process_audio_for_prediction(audio_file_path, metadata_input=None)
+
+    if processed_audio_input is not None:
+        # Display Spectrogram
+        st.subheader("Mel-frequency Spectrogram")
+        y_uploaded, sr_uploaded = librosa.load(audio_file_path, sr=22050)
+        S = librosa.feature.melspectrogram(y=y_uploaded, sr=sr_uploaded)
+        S_dB = librosa.power_to_db(S, ref=np.max)
+
+        fig, ax = plt.subplots(figsize=(10, 4))
+        librosa.display.specshow(S_dB, sr=sr_uploaded, x_axis='time', y_axis='mel', ax=ax)
+        fig.colorbar(format='%+2.0f dB', ax=ax)
+        ax.set_title('Mel-frequency spectrogram')
+        st.pyplot(fig)
+        plt.close(fig) # Close figure to prevent display issues
+
+        st.subheader("Prediction:")
+        if pn_model is not None and class_prototypes is not None:
+            # Get embedding for the uploaded audio
+            query_embedding = pn_model.embedding(processed_audio_input)
+
+            # Calculate Euclidean distances to pre-computed prototypes
+            distances = tf.norm(class_prototypes - query_embedding, axis=1)
+
+            # Predict the class with the minimum distance
+            predicted_class_idx = tf.argmin(distances).numpy()
+            predicted_accent = le_y.inverse_transform([predicted_class_idx])[0]
+
+            st.success(f"Predicted Accent: **{predicted_accent}**")
+        else:
+            st.warning("Model or prototypes not available for prediction.")
     else:
-        with col2:
-            st.info("👈 Upload file audio untuk memulai analisis")
+        st.error("Could not process the audio file.")
 
-# Info tambahan
-with st.expander("ℹ️ Tentang Few-Shot Learning"):
-    st.write("""
-    **Prototypical Network** adalah metode Few-Shot Learning yang:
-    - Menggunakan **Support Set** sebagai referensi untuk setiap kelas
-    - Menghitung **prototype** (centroid) dari embedding setiap kelas
-    - Mengklasifikasikan query berdasarkan jarak ke prototype terdekat
-    
-    **Support Set** adalah sekumpulan contoh dari setiap kelas aksen yang digunakan sebagai referensi saat prediksi.
-    """)
+    # Clean up the temporary file
+    os.remove(audio_file_path)
+```
