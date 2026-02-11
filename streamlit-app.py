@@ -7,7 +7,7 @@ import os
 from sklearn.preprocessing import LabelEncoder, StandardScaler, OneHotEncoder
 import keras
 
-# --- 1. REGISTRASI CLASS CUSTOM (SOLUSI: method not implemented) ---
+# --- 1. REGISTRASI CLASS CUSTOM (DENGAN IMPLEMENTASI CALL YANG AMAN) ---
 @keras.saving.register_keras_serializable()
 class PrototypicalNetwork(tf.keras.Model):
     def __init__(self, embedding_model=None, **kwargs):
@@ -15,10 +15,10 @@ class PrototypicalNetwork(tf.keras.Model):
         self.embedding = embedding_model
 
     def call(self, x, training=False):
-        # Menangani berbagai kemungkinan struktur penyimpanan model oleh Keras
+        # Menangani berbagai struktur penyimpanan internal Keras (TrackedDict, dll)
         emb_layer = self.embedding
         if isinstance(emb_layer, dict):
-            # Jika berupa TrackedDict, ambil layer asli di dalamnya
+            # Mencari layer asli di dalam dictionary internal Keras
             emb_layer = emb_layer.get('embedding', list(emb_layer.values())[0])
         
         # Eksekusi embedding
@@ -32,7 +32,7 @@ class PrototypicalNetwork(tf.keras.Model):
             config.update({"embedding_model": keras.saving.serialize_keras_object(self.embedding)})
         return config
 
-# --- 2. FUNGSI PREPROCESSING ---
+# --- 2. FUNGSI PREPROCESSING AUDIO ---
 def extract_mfcc(file_path, max_len=174):
     try:
         y, sr = librosa.load(file_path, sr=22050)
@@ -42,7 +42,7 @@ def extract_mfcc(file_path, max_len=174):
         delta2 = librosa.feature.delta(mfcc, order=2)
         feat = np.stack([mfcc, delta, delta2], axis=-1)
         
-        # Padding/Truncating ke panjang standar
+        # Padding/Truncating standar
         if feat.shape[1] < max_len:
             feat = np.pad(feat, ((0,0), (0, max_len - feat.shape[1]), (0,0)), mode='constant')
         else:
@@ -50,7 +50,7 @@ def extract_mfcc(file_path, max_len=174):
         return feat
     except: return None
 
-# --- 3. LOAD RESOURCE ---
+# --- 3. LOAD RESOURCE (ENCODER & MODEL) ---
 @st.cache_resource
 def load_app_resources():
     # Load Metadata untuk inisialisasi Encoders
@@ -61,7 +61,7 @@ def load_app_resources():
     scaler_u = StandardScaler().fit(df['usia'].values.reshape(-1, 1))
     ohe = OneHotEncoder(handle_unknown="ignore", sparse_output=False).fit(df[['gender', 'provinsi']])
 
-    # Nama file model harus sesuai: model_detect_aksen.keras
+    # Nama file model harus: model_detect_aksen.keras
     model = tf.keras.models.load_model(
         "model_aksen.keras", 
         custom_objects={"PrototypicalNetwork": PrototypicalNetwork}, 
@@ -79,21 +79,28 @@ def load_prototypes():
 
 class_prototypes = load_prototypes()
 
-# --- 4. FUNGSI INFERENSI (SOLUSI: Shape Mismatch) ---
+# --- 4. FUNGSI INFERENSI (SOLUSI FINAL UNTUK SHAPE MISMATCH) ---
 def get_embedding_safely(model, x_input):
+    """Mengekstrak embedding dan memastikannya berbentuk vektor datar tunggal"""
     x_tensor = tf.convert_to_tensor(x_input, dtype=tf.float32)
     try:
-        # Gunakan predict() untuk stabilitas di server Streamlit
+        # Gunakan predict() untuk stabilitas di Streamlit Cloud
         res = model.predict(x_tensor, verbose=0)
         
-        # FIX: Ringkas dimensi jika model mengembalikan urutan fitur temporal
-        # Mengubah shape (1, 40, 174, 11) menjadi vektor tunggal (misal: 128)
+        # Jika output model masih memiliki dimensi spasial (misal: 1, 40, 174, 128)
+        # Lakukan Global Average Pooling untuk mendapatkan vektor embedding tunggal
         if len(res.shape) > 2:
             res = np.mean(res, axis=(1, 2))
             
+        # Pastikan hasil berbentuk (1, Dimensi_Embedding)
         return np.reshape(res, (1, -1)) 
     except Exception as e:
-        raise Exception(f"Gagal ekstraksi embedding: {str(e)}")
+        # Fallback: Coba panggil model secara langsung melalui call()
+        res_call = model(x_tensor, training=False)
+        res_np = res_call.numpy() if hasattr(res_call, 'numpy') else np.array(res_call)
+        if len(res_np.shape) > 2:
+            res_np = np.mean(res_np, axis=(1, 2))
+        return np.reshape(res_np, (1, -1))
 
 # --- 5. ANTARMUKA PENGGUNA (UI) ---
 st.title("🎙️ Accent Detection System")
@@ -102,7 +109,7 @@ with st.sidebar:
     st.header("Profil Pengguna")
     u_in = st.number_input("Usia", 1, 100, 25)
     g_in = st.selectbox("Gender", le_g.classes_)
-    p_in = st.selectbox("Provinsi", le_p.classes_)
+    p_in = st.selectbox("Asal Provinsi", le_p.classes_)
 
 up_file = st.file_uploader("Upload Audio Rekaman (WAV)", type=["wav"])
 
@@ -128,7 +135,7 @@ if up_file:
                     query_vec = get_embedding_safely(main_model, final_in)
                     
                     # HITUNG JARAK EUCLIDEAN
-                    # Bandingkan query_vec (128,) dengan class_prototypes (5, 128)
+                    # query_vec.flatten() memastikan bentuknya (128,) cocok dengan class_prototypes (5, 128)
                     dists = np.linalg.norm(class_prototypes - query_vec.flatten(), axis=1)
                     idx = np.argmin(dists)
                     
@@ -142,4 +149,3 @@ if up_file:
             
             # Bersihkan file sementara
             if os.path.exists("temp.wav"): os.remove("temp.wav")
-
