@@ -93,7 +93,7 @@ le_y, le_gender, le_provinsi, scaler_usia, ohe = load_resources()
 # --- 4. LOAD MODEL (SOLUSI VALUE ERROR) ---
 @st.cache_resource
 def load_model_safely():
-    m_path = "model_detect_aksen.keras"
+    m_path = "model_aksen.keras"
     if not os.path.exists(m_path):
         st.error(f"File {m_path} tidak ditemukan!")
         st.stop()
@@ -166,3 +166,4 @@ if uploaded_file:
                     st.warning("Aplikasi butuh file 'prototypes.npy' di GitHub untuk membandingkan suara.")
             
             if os.path.exists("temp_in.wav"): os.remove("temp_in.wav")
+
