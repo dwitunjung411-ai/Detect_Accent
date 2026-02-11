@@ -2,113 +2,112 @@ import streamlit as st
 import numpy as np
 import pandas as pd
 import librosa
-import tempfile
-import os
 import tensorflow as tf
-from scipy.spatial.distance import cdist
+import os
+from sklearn.preprocessing import LabelEncoder, StandardScaler, OneHotEncoder
+import keras
 
-# 1. Registrasi Class (Tetap sama)
-@tf.keras.utils.register_keras_serializable(package="Custom")
+# --- 1. REGISTRASI MODEL KUSTOM ---
+@keras.saving.register_keras_serializable()
 class PrototypicalNetwork(tf.keras.Model):
     def __init__(self, embedding_model=None, **kwargs):
-        super(PrototypicalNetwork, self).__init__(**kwargs)
+        super().__init__(**kwargs)
         self.embedding = embedding_model
-    def call(self, inputs):
-        return self.embedding(inputs)
+    def call(self, x, training=False):
+        emb = self.embedding
+        if isinstance(emb, dict):
+            emb = emb.get('embedding', list(emb.values())[0])
+        return emb(x, training=training) if callable(emb) else x
+    def get_config(self):
+        config = super().get_config()
+        if self.embedding: 
+            config.update({"embedding_model": keras.saving.serialize_keras_object(self.embedding)})
+        return config
 
-# 2. Fungsi Ekstraksi Embedding
-def extract_embedding(audio_path, model):
-    y, sr = librosa.load(audio_path, sr=16000)
-    mfcc = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=40)
-    mfcc_scaled = np.mean(mfcc.T, axis=0) 
-    query_tensor = tf.convert_to_tensor([mfcc_scaled], dtype=tf.float32)
-    
-    # Mengambil output embedding
-    if hasattr(model, 'layers') and len(model.layers) > 0:
-        return model.layers[0](query_tensor).numpy()
-    return model(query_tensor).numpy()
-
-# 3. Fungsi Utama Prediksi (Real Inference)
-def predict_real_accent(audio_path, model, prototypes):
-    """
-    Membandingkan embedding input dengan prototipe aksen yang sudah disimpan.
-    """
+# --- 2. FUNGSI PREPROCESSING AUDIO LOKAL ---
+def extract_mfcc(file_path, max_len=174):
     try:
-        query_embedding = extract_embedding(audio_path, model)
-        
-        # Hitung jarak Euclidean antara input dengan semua prototipe
-        labels = list(prototypes.keys())
-        proto_matrix = np.array([prototypes[l] for l in labels])
-        
-        distances = cdist(query_embedding, proto_matrix, metric='euclidean')
-        idx_prediksi = np.argmin(distances)
-        
-        return labels[idx_prediksi]
-    except Exception as e:
-        return f"Error Prediksi: {str(e)}"
+        y, sr = librosa.load(file_path, sr=22050)
+        y = librosa.util.normalize(y)
+        mfcc = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=40)
+        delta = librosa.feature.delta(mfcc)
+        delta2 = librosa.feature.delta(mfcc, order=2)
+        feat = np.stack([mfcc, delta, delta2], axis=-1)
+        if feat.shape[1] < max_len:
+            feat = np.pad(feat, ((0,0), (0, max_len - feat.shape[1]), (0,0)), mode='constant')
+        else:
+            feat = feat[:, :max_len, :]
+        return feat
+    except: return None
 
-# 4. Antarmuka Streamlit
-def main():
-    st.set_page_config(page_title="Deteksi Aksen Prototypical", layout="centered")
+# --- 3. LOAD RESOURCE (REFERENSI METADATA.CSV) ---
+@st.cache_resource
+def load_all_resources():
+    # Membaca metadata agar Encoder tahu kategori apa saja yang ada
+    df = pd.read_csv('metadata.csv').dropna(subset=['usia', 'gender', 'provinsi', 'label_aksen'])
+    le_y = LabelEncoder().fit(df['label_aksen'].astype(str))
+    le_g = LabelEncoder().fit(df['gender'].astype(str))
+    le_p = LabelEncoder().fit(df['provinsi'].astype(str))
+    scaler_u = StandardScaler().fit(df['usia'].values.reshape(-1, 1))
+    ohe = OneHotEncoder(handle_unknown="ignore", sparse_output=False).fit(df[['gender', 'provinsi']])
     
-    @st.cache_resource
-    def load_all():
-        # UPDATE: Gunakan nama model sesuai instruksi Anda
-        model_name = "model_aksen.keras" 
-        m = None
-        if os.path.exists(model_name):
-            m = tf.keras.models.load_model(model_name, compile=False)
-        
-        # Simulasi Prototipe (Idealnya ini dihitung dari data training)
-        # Jika Anda punya file 'prototypes.npy', load dari sana.
-        # Di sini saya buat contoh struktur data prototipe:
-        d = pd.read_csv("metadata.csv") if os.path.exists("metadata.csv") else None
-        
-        # Contoh dummy prototypes (Anda harus mengganti ini dengan pusat koordinat tiap aksen)
-        # format: {'Jawa': [0.1, 0.2, ...], 'Sunda': [0.5, -0.1, ...]}
-        protos = {} 
-        if d is not None:
-            # Sederhananya, kita kelompokkan provinsi unik sebagai label
-            list_aksen = d['provinsi'].unique()
-            for aksen in list_aksen:
-                protos[aksen] = np.random.rand(64) # Ganti 64 dengan dimensi output model Anda
+    # Load model_detect_aksen.keras
+    model = tf.keras.models.load_model("model_aksen.keras", 
+                                       custom_objects={"PrototypicalNetwork": PrototypicalNetwork}, 
+                                       compile=False)
+    return le_y, le_g, le_p, scaler_u, ohe, model
+
+le_y, le_g, le_p, scaler_u, ohe, main_model = load_all_resources()
+
+# Load Prototypes yang sudah dihitung di Colab
+class_prototypes = np.load("prototypes.npy") if os.path.exists("prototypes.npy") else None
+
+# --- 4. UI & LOGIKA DETEKSI ---
+st.title("🎙️ Accent Detection System")
+
+with st.sidebar:
+    st.header("Informasi Metadata")
+    # Pilihan di sini diambil otomatis dari kategori di metadata.csv
+    u_val = st.number_input("Usia Anda", 1, 100, 25)
+    g_val = st.selectbox("Gender", le_g.classes_)
+    p_val = st.selectbox("Asal Provinsi", le_p.classes_)
+
+# Input audio dari laptop (Lokal)
+uploaded_audio = st.file_uploader("Upload Audio Rekaman dari Laptop (.WAV)", type=["wav"])
+
+if uploaded_audio and st.button("Deteksi Sekarang"):
+    if class_prototypes is None:
+        st.error("File 'prototypes.npy' tidak ditemukan! Pastikan sudah di-push ke GitHub.")
+    else:
+        with st.spinner("Mengekstrak fitur dan mencocokkan aksen..."):
+            # Simpan sementara di server untuk diproses librosa
+            with open("temp_audio.wav", "wb") as f:
+                f.write(uploaded_audio.getbuffer())
+            
+            feat = extract_mfcc("temp_audio.wav")
+            if feat is not None:
+                # Proses Metadata User
+                m_v = np.hstack([scaler_u.transform([[u_val]]), ohe.transform([[g_val, p_val]])]).astype(np.float32)
+                m_b = np.tile(m_v, (feat.shape[0], feat.shape[1], 1))
+                final_in = np.expand_dims(np.concatenate([feat, m_b], axis=-1), axis=0)
                 
-        return m, d, protos
-
-    model_aksen, df_metadata, prototypes = load_all()
-
-    st.title("🎙️ Deteksi Aksen Suara (Real-Time AI)")
-    st.write("Sistem akan menganalisis gelombang suara dan mencocokkannya dengan karakteristik aksen daerah.")
-    st.divider()
-
-    audio_file = st.file_uploader("Pilih file audio (WAV/MP3)", type=["wav", "mp3"])
-
-    if audio_file:
-        st.audio(audio_file)
-        if st.button("🚀 Deteksi Karakteristik Suara", use_container_width=True):
-            with st.spinner("Model sedang menghitung jarak embedding..."):
-                with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
-                    tmp.write(audio_file.getbuffer())
-                    path_file = tmp.name
-
-                # PREDDIKSI SEBENARNYA
-                hasil_aksen = predict_real_accent(path_file, model_aksen, prototypes)
-                st.session_state['last_result'] = hasil_aksen
-                
-                if os.path.exists(path_file): os.unlink(path_file)
-
-    if 'last_result' in st.session_state:
-        st.success(f"### Prediksi Aksen: {st.session_state['last_result']}")
-        
-        # Info Metadata Tetap Ditampilkan jika file cocok (Opsional)
-        if df_metadata is not None:
-            match = df_metadata[df_metadata['file_name'].str.strip() == audio_file.name.strip()]
-            if not match.empty:
-                info = match.iloc[0]
-                st.info("Informasi tambahan ditemukan di database:")
-                c1, c2 = st.columns(2)
-                c1.metric("Gender", info.get('gender', '-'))
-                c2.metric("Usia", f"{info.get('usia', '-')} Thn")
-
-if __name__ == "__main__":
-    main()
+                # Inferensi Model
+                try:
+                    res = main_model.predict(final_in, verbose=0)
+                    if len(res.shape) > 2: res = np.mean(res, axis=(1, 2))
+                    query_vec = res.flatten()
+                    
+                    # Hitung jarak ke tiap kategori aksen dari metadata
+                    dists = np.linalg.norm(class_prototypes - query_vec, axis=1)
+                    idx = np.argmin(dists)
+                    
+                    st.success(f"### Hasil Prediksi: Aksen {le_y.classes_[idx]}")
+                    
+                    # Tampilkan Grafik Confidence
+                    conf = tf.nn.softmax(-dists).numpy()
+                    st.bar_chart(pd.DataFrame({'Confidence': conf}, index=le_y.classes_))
+                except Exception as e:
+                    st.error(f"Error Klasifikasi: {e}")
+            
+            if os.path.exists("temp_audio.wav"):
+                os.remove("temp_audio.wav")
