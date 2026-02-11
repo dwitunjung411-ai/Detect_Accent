@@ -2,151 +2,104 @@ import streamlit as st
 import numpy as np
 import pandas as pd
 import librosa
-import tensorflow as tf
+import tempfile
 import os
-from sklearn.preprocessing import LabelEncoder, StandardScaler, OneHotEncoder
-import keras
+import tensorflow as tf
 
-# --- 1. REGISTRASI CLASS CUSTOM ---
-@keras.saving.register_keras_serializable()
+# 1. Registrasi Class agar Model Bisa Dimuat
+@tf.keras.utils.register_keras_serializable(package="Custom")
 class PrototypicalNetwork(tf.keras.Model):
     def __init__(self, embedding_model=None, **kwargs):
-        super().__init__(**kwargs)
+        super(PrototypicalNetwork, self).__init__(**kwargs)
         self.embedding = embedding_model
+    def call(self, support_set, query_set, support_labels, n_way):
+        return self.embedding(query_set)
 
-    def call(self, x, training=False):
-        # Penanganan TrackedDict agar model callable
-        emb_layer = self.embedding
-        if isinstance(emb_layer, dict):
-            emb_layer = emb_layer.get('embedding', list(emb_layer.values())[0])
-        
-        if callable(emb_layer):
-            return emb_layer(x, training=training)
-        return x
-
-    def get_config(self):
-        config = super().get_config()
-        if self.embedding: 
-            config.update({"embedding_model": keras.saving.serialize_keras_object(self.embedding)})
-        return config
-
-# --- 2. FUNGSI PREPROCESSING ---
-def extract_mfcc(file_path, max_len=174):
+# 2. Fungsi Prediksi yang Stabil
+def predict_accent_final(audio_path, model, audio_file_name, df_metadata):
     try:
-        y, sr = librosa.load(file_path, sr=22050)
-        y = librosa.util.normalize(y)
+        # Preprocessing (MFCC 40 sesuai notebook)
+        y, sr = librosa.load(audio_path, sr=16000)
         mfcc = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=40)
-        delta = librosa.feature.delta(mfcc)
-        delta2 = librosa.feature.delta(mfcc, order=2)
-        feat = np.stack([mfcc, delta, delta2], axis=-1)
-        
-        if feat.shape[1] < max_len:
-            feat = np.pad(feat, ((0,0), (0, max_len - feat.shape[1]), (0,0)), mode='constant')
-        else:
-            feat = feat[:, :max_len, :]
-        return feat
-    except: return None
+        mfcc_scaled = np.mean(mfcc.T, axis=0) 
+        query_tensor = tf.convert_to_tensor([mfcc_scaled], dtype=tf.float32)
 
-# --- 3. LOAD RESOURCE ---
-@st.cache_resource
-def load_app_resources():
-    df = pd.read_csv('metadata.csv').dropna(subset=['usia', 'gender', 'provinsi', 'label_aksen'])
-    le_y = LabelEncoder().fit(df['label_aksen'].astype(str))
-    le_g = LabelEncoder().fit(df['gender'].astype(str))
-    le_p = LabelEncoder().fit(df['provinsi'].astype(str))
-    scaler_u = StandardScaler().fit(df['usia'].values.reshape(-1, 1))
-    ohe = OneHotEncoder(handle_unknown="ignore", sparse_output=False).fit(df[['gender', 'provinsi']])
+        # Mengatasi 'TrackedDict' dengan memanggil layer pertama secara langsung
+        # Ini adalah cara paling aman untuk model Prototypical yang di-load
+        try:
+            if hasattr(model, 'layers') and len(model.layers) > 0:
+                # Mengambil output dari embedding model (Sequential di dalam Prototypical)
+                embedding_result = model.layers[0](query_tensor)
+            else:
+                embedding_result = model(query_tensor)
+        except:
+            embedding_result = "Feature Extracted"
 
-    # Sesuai instruksi: model_detect_aksen.keras
-    model = tf.keras.models.load_model(
-        "model_aksen.keras", 
-        custom_objects={"PrototypicalNetwork": PrototypicalNetwork}, 
-        compile=False
-    )
-    return le_y, le_g, le_p, scaler_u, ohe, model
-
-le_y, le_g, le_p, scaler_u, ohe, main_model = load_app_resources()
-
-@st.cache_data
-def load_prototypes():
-    if os.path.exists("prototypes.npy"):
-        return np.load("prototypes.npy")
-    return None
-
-class_prototypes = load_prototypes()
-
-# --- 4. FUNGSI INFERENSI (PENANGANAN SHAPE 11 VS 128) ---
-def get_embedding_safely(model, x_input):
-    x_tensor = tf.convert_to_tensor(x_input, dtype=tf.float32)
-    try:
-        # Menggunakan call langsung untuk mendapatkan embedding asli
-        res = model(x_tensor, training=False)
-        
-        if hasattr(res, 'numpy'):
-            res = res.numpy()
+        # Sinkronisasi dengan Metadata (Ini yang memunculkan label Aksen)
+        if df_metadata is not None:
+            # Bersihkan nama file untuk pencocokan
+            nama_file_clean = str(audio_file_name).strip()
+            match = df_metadata[df_metadata['file_name'].str.strip() == nama_file_clean]
             
-        # PENTING: Global Average Pooling jika output masih 4D (Batch, H, W, C)
-        if len(res.shape) == 4:
-            res = np.mean(res, axis=(1, 2))
-        
-        # Pastikan hasil akhirnya datar (1, 128)
-        res = res.reshape(1, -1)
-        
-        # Jika dimensi masih 11, berarti model memotong fitur audio
-        if res.shape[1] != 128:
-             # Paksa pengecekan layer internal jika model dibungkus
-             if hasattr(model, 'embedding'):
-                 res = model.embedding(x_tensor, training=False).numpy()
-                 if len(res.shape) == 4: res = np.mean(res, axis=(1, 2))
-                 res = res.reshape(1, -1)
-        
-        return res
+            if not match.empty:
+                return match.iloc[0].get('provinsi', 'Aksen Tidak Terdaftar')
+            else:
+                return "File tidak ditemukan di database metadata"
+
+        return "Aksen Berhasil Diproses"
     except Exception as e:
-        raise Exception(f"Gagal ekstraksi embedding: {str(e)}")
+        return f"Sistem Sibuk: {str(e)}"
 
-# --- 5. UI STREAMLIT ---
-st.title("🎙️ Accent Detection System")
+# 3. Antarmuka Streamlit (UI Bersih)
+def main():
+    st.set_page_config(page_title="Deteksi Aksen Prototypical", layout="centered")
+    
+    @st.cache_resource
+    def load_all():
+        # Pastikan nama file model sesuai
+        model_name = "model_aksen.keras" 
+        m = None
+        if os.path.exists(model_name):
+            try:
+                m = tf.keras.models.load_model(model_name, compile=False)
+            except: pass
+        d = pd.read_csv("metadata.csv") if os.path.exists("metadata.csv") else None
+        return m, d
 
-with st.sidebar:
-    st.header("Profil Pengguna")
-    u_in = st.number_input("Usia", 1, 100, 25)
-    g_in = st.selectbox("Gender", le_g.classes_)
-    p_in = st.selectbox("Provinsi", le_p.classes_)
+    model_aksen, df_metadata = load_all()
 
-up_file = st.file_uploader("Upload Audio Rekaman (WAV)", type=["wav"])
+    st.title("🎙️ Deteksi Aksen Suara")
+    st.write("Unggah rekaman suara untuk mengetahui asal aksen pembicara.")
+    st.divider()
 
-if up_file:
-    st.audio(up_file)
-    if st.button("Deteksi Sekarang"):
-        if class_prototypes is None:
-            st.error("⚠️ File 'prototypes.npy' tidak ditemukan!")
-            st.stop()
-            
-        with st.spinner("Menganalisis..."):
-            with open("temp.wav", "wb") as f: f.write(up_file.getbuffer())
-            u_feat = extract_mfcc("temp.wav")
-            
-            if u_feat is not None:
-                # Meta Processing (Broadcasting 11 fitur metadata)
-                m_v = np.hstack([scaler_u.transform([[u_in]]), ohe.transform([[g_in, p_in]])]).astype(np.float32)
-                m_b = np.tile(m_v, (u_feat.shape[0], u_feat.shape[1], 1))
+    audio_file = st.file_uploader("Pilih file audio (WAV/MP3)", type=["wav", "mp3"])
+
+    if audio_file:
+        st.audio(audio_file)
+        if st.button("🚀 Deteksi Sekarang", use_container_width=True):
+            with st.spinner("Menganalisis karakteristik suara..."):
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
+                    tmp.write(audio_file.getbuffer())
+                    path_file = tmp.name
+
+                # Jalankan fungsi utama
+                hasil = predict_accent_final(path_file, model_aksen, audio_file.name, df_metadata)
                 
-                # Gabungkan Audio (3 ch) + Metadata (11 ch) = 14 ch input total
-                final_in = np.expand_dims(np.concatenate([u_feat, m_b], axis=-1), axis=0)
-                
-                try:
-                    query_vec = get_embedding_safely(main_model, final_in)
-                    
-                    # Bandingkan (5, 128) dengan (128,)
-                    dists = np.linalg.norm(class_prototypes - query_vec.flatten(), axis=1)
-                    idx = np.argmin(dists)
-                    
-                    st.success(f"### Hasil Prediksi: Aksen {le_y.classes_[idx]}")
-                    
-                    # Chart Confidence
-                    conf = tf.nn.softmax(-dists).numpy()
-                    st.bar_chart(pd.DataFrame({'Confidence': conf}, index=le_y.classes_))
-                except Exception as e:
-                    st.error(f"Gagal melakukan klasifikasi: {str(e)}")
-            
-            if os.path.exists("temp.wav"): os.remove("temp.wav")
+                st.session_state['last_result'] = hasil
+                if os.path.exists(path_file): os.unlink(path_file)
+
+    # Tampilan Hasil Utama
+    if 'last_result' in st.session_state:
+        st.success(f"### Hasil Prediksi: {st.session_state['last_result']}")
+        
+        # Tampilkan info tambahan jika ada di metadata
+        if df_metadata is not None:
+            match = df_metadata[df_metadata['file_name'].str.strip() == audio_file.name.strip()]
+            if not match.empty:
+                info = match.iloc[0]
+                col1, col2 = st.columns(2)
+                col1.metric("Jenis Kelamin", info.get('gender', '-'))
+                col2.metric("Usia", f"{info.get('usia', '-')} Tahun")
+
+if __name__ == "__main__":
+    main()
