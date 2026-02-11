@@ -39,6 +39,7 @@ def extract_mfcc(file_path, max_len=174):
 # --- 3. LOAD RESOURCE ---
 @st.cache_resource
 def load_app_resources():
+    # Load Metadata
     df = pd.read_csv('metadata.csv').dropna(subset=['usia', 'gender', 'provinsi', 'label_aksen'])
     le_y = LabelEncoder().fit(df['label_aksen'].astype(str))
     le_g = LabelEncoder().fit(df['gender'].astype(str))
@@ -46,20 +47,22 @@ def load_app_resources():
     scaler_u = StandardScaler().fit(df['usia'].values.reshape(-1, 1))
     ohe = OneHotEncoder(handle_unknown="ignore", sparse_output=False).fit(df[['gender', 'provinsi']])
 
+    # Load Model
     m_path = "model_aksen.keras"
     model = tf.keras.models.load_model(m_path, 
                                        custom_objects={"PrototypicalNetwork": PrototypicalNetwork}, 
                                        compile=False)
     
-    # --- PERBAIKAN DETECTION LAYER ---
-    if hasattr(model, 'embedding') and callable(model.embedding):
+    # --- PERBAIKAN LOGIKA PENGAMBILAN EMBEDDING LAYER ---
+    # Cek apakah ada atribut .embedding, jika tidak ambil layer pertama dengan aman
+    if hasattr(model, 'embedding'):
         emb_layer = model.embedding
-    elif isinstance(model.layers[0], tf.keras.layers.Layer):
-        emb_layer = model.layers[0]
     else:
-        # Fallback jika model adalah sequential atau wrapper
-        emb_layer = model
-        
+        try:
+            emb_layer = model.get_layer(index=0)
+        except:
+            emb_layer = model
+            
     return le_y, le_g, le_p, scaler_u, ohe, emb_layer
 
 le_y, le_g, le_p, scaler_u, ohe, emb_layer = load_app_resources()
@@ -79,7 +82,7 @@ with st.sidebar:
     st.header("Profil Pengguna")
     u_in = st.number_input("Usia", 1, 100, 25)
     g_in = st.selectbox("Gender", le_g.classes_)
-    p_in = st.selectbox("Asal Provinsi", le_p.classes_)
+    p_in = st.selectbox("Provinsi", le_p.classes_)
 
 up_file = st.file_uploader("Upload Rekaman Suara (WAV)", type=["wav"])
 
@@ -98,23 +101,24 @@ if up_file:
                 # Meta transform
                 m_v = np.hstack([scaler_u.transform([[u_in]]), ohe.transform([[g_in, p_in]])]).astype(np.float32)
                 m_b = np.tile(m_v, (u_feat.shape[0], u_feat.shape[1], 1))
-                
-                # Pastikan input berupa float32
                 final_in = np.expand_dims(np.concatenate([u_feat, m_b], axis=-1), axis=0).astype(np.float32)
                 
-                # --- PERBAIKAN LINE 110 ---
-                # Menggunakan tf.constant untuk memastikan input valid untuk layer Keras
+                # Inference
                 try:
+                    # Menggunakan metode predict atau call yang lebih aman
                     query_emb = emb_layer(tf.constant(final_in))
                     query_vec = tf.reshape(query_emb, [-1]).numpy()
                     
-                    # Prediksi Jarak
+                    # Klasifikasi Jarak
                     dists = np.linalg.norm(class_prototypes - query_vec, axis=1)
                     idx = np.argmin(dists)
                     
                     st.success(f"### Hasil Prediksi: Aksen {le_y.classes_[idx]}")
-                    st.bar_chart(pd.DataFrame({'Score': tf.nn.softmax(-dists).numpy()}, index=le_y.classes_))
+                    
+                    # Bar Chart Confidence
+                    conf = tf.nn.softmax(-dists).numpy()
+                    st.bar_chart(pd.DataFrame({'Confidence': conf}, index=le_y.classes_))
                 except Exception as e:
-                    st.error(f"Error saat inferensi model: {str(e)}")
+                    st.error(f"Error inferensi: {str(e)}")
             
             if os.path.exists("temp_input.wav"): os.remove("temp_input.wav")
