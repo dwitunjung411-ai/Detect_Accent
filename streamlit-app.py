@@ -7,7 +7,7 @@ import os
 from sklearn.preprocessing import LabelEncoder, StandardScaler, OneHotEncoder
 import keras
 
-# --- 1. REGISTRASI CLASS (WAJIB ADA AGAR LOAD_MODEL BERHASIL) ---
+# --- 1. REGISTRASI CLASS (SOLUSI ERROR: method not implemented) ---
 @keras.saving.register_keras_serializable()
 class PrototypicalNetwork(tf.keras.Model):
     def __init__(self, embedding_model=None, **kwargs):
@@ -15,8 +15,11 @@ class PrototypicalNetwork(tf.keras.Model):
         self.embedding = embedding_model
 
     def call(self, x, training=False):
-        # Implementasi call minimalis agar tidak error saat di-load
+        # Implementasi call eksplisit untuk menangani pemanggilan model
         if self.embedding is not None:
+            # Jika embedding adalah TrackedDict, coba akses sebagai atribut
+            if isinstance(self.embedding, dict) or not callable(self.embedding):
+                return self.embedding['embedding'](x) if 'embedding' in self.embedding else x
             return self.embedding(x, training=training)
         return x
 
@@ -26,7 +29,7 @@ class PrototypicalNetwork(tf.keras.Model):
             config.update({"embedding_model": keras.saving.serialize_keras_object(self.embedding)})
         return config
 
-# --- 2. FUNGSI PREPROCESSING ---
+# --- 2. PREPROCESSING AUDIO ---
 def extract_mfcc(file_path, max_len=174):
     try:
         y, sr = librosa.load(file_path, sr=22050)
@@ -53,9 +56,9 @@ def load_app_resources():
     scaler_u = StandardScaler().fit(df['usia'].values.reshape(-1, 1))
     ohe = OneHotEncoder(handle_unknown="ignore", sparse_output=False).fit(df[['gender', 'provinsi']])
 
-    # Load Model (Gunakan nama file sesuai data koreksi Anda)
+    # Load Model (Gunakan nama model_detect_aksen.keras sesuai instruksi)
     model = tf.keras.models.load_model(
-        "model_aksen.keras", 
+        "model_detect_aksen.keras", 
         custom_objects={"PrototypicalNetwork": PrototypicalNetwork}, 
         compile=False
     )
@@ -71,45 +74,45 @@ def load_prototypes():
 
 class_prototypes = load_prototypes()
 
-# --- 4. FUNGSI INFERENSI (SOLUSI TRACKEDDICT & CALL ERROR) ---
-def get_embedding(model, x_input):
-    """Mengekstrak embedding dengan mencoba berbagai metode akses model"""
-    # 1. Coba gunakan metode predict() standar
-    try: 
-        res = model.predict(x_input, verbose=0)
-        return res
+# --- 4. FUNGSI INFERENSI (SOLUSI ERROR: TrackedDict is not callable) ---
+def get_embedding_safely(model, x_input):
+    """Mencoba berbagai cara untuk mendapatkan output embedding dari model"""
+    # Pastikan input adalah float32 tensor
+    x_tensor = tf.convert_to_tensor(x_input, dtype=tf.float32)
+    
+    # Cara 1: Gunakan predict() standar
+    try: return model.predict(x_tensor, verbose=0)
     except: pass
     
-    # 2. Coba akses atribut .embedding (PrototypicalNetwork)
+    # Cara 2: Cek atribut embedding internal
     if hasattr(model, 'embedding'):
         emb = model.embedding
-        try: return emb.predict(x_input, verbose=0)
-        except: 
-            try: return emb(x_input)
-            except: pass
+        try: return emb(x_tensor).numpy()
+        except:
+            if hasattr(emb, 'predict'): return emb.predict(x_tensor, verbose=0)
 
-    # 3. Ambil layer pertama jika model adalah wrapper
-    try: return model.layers[0](x_input)
+    # Cara 3: Akses melalui layer pertama
+    try: return model.layers[0](x_tensor).numpy()
     except: pass
 
-    # 4. Fallback terakhir: panggil model secara langsung
-    return model(x_input)
+    # Cara 4: Panggil langsung dengan penanganan dictionary
+    try: return model(x_tensor).numpy()
+    except: return np.array(model(x_tensor))
 
 # --- 5. ANTARMUKA PENGGUNA (UI) ---
 st.title("🎙️ Accent Detection System")
 
 with st.sidebar:
-    st.header("Profil")
+    st.header("Profil Pengguna")
     u_in = st.number_input("Usia", 1, 100, 25)
     g_in = st.selectbox("Gender", le_g.classes_)
-    p_in = st.selectbox("Provinsi", le_p.classes_)
+    p_in = st.selectbox("Asal Provinsi", le_p.classes_)
 
-up_file = st.file_uploader("Upload Audio Rekaman (WAV)", type=["wav"])
+up_file = st.file_uploader("Upload Audio (WAV)", type=["wav"])
 
 if up_file:
     st.audio(up_file)
     if st.button("Deteksi Sekarang"):
-        # Validasi ketersediaan file prototypes di GitHub
         if class_prototypes is None:
             st.error("⚠️ File 'prototypes.npy' tidak ditemukan di GitHub!")
             st.stop()
@@ -122,26 +125,25 @@ if up_file:
                 # Meta Processing
                 m_v = np.hstack([scaler_u.transform([[u_in]]), ohe.transform([[g_in, p_in]])]).astype(np.float32)
                 m_b = np.tile(m_v, (u_feat.shape[0], u_feat.shape[1], 1))
-                final_in = np.expand_dims(np.concatenate([u_feat, m_b], axis=-1), axis=0).astype(np.float32)
+                final_in = np.expand_dims(np.concatenate([u_feat, m_b], axis=-1), axis=0)
                 
-                # Inference menggunakan fungsi get_embedding yang sudah diperbaiki
+                # Inference
                 try:
-                    query_emb = get_embedding(main_model, final_in)
+                    query_emb = get_embedding_safely(main_model, final_in)
                     query_vec = np.array(query_emb).flatten()
                     
-                    # Hitung jarak Euclidean ke prototypes
+                    # Klasifikasi Jarak Euclidean
                     dists = np.linalg.norm(class_prototypes - query_vec, axis=1)
                     idx = np.argmin(dists)
                     
                     st.success(f"### Hasil Prediksi: Aksen {le_y.classes_[idx]}")
                     
-                    # Tampilkan Grafik Skor
+                    # Tampilkan Grafik Bar
                     conf = tf.nn.softmax(-dists).numpy()
                     st.bar_chart(pd.DataFrame({'Confidence': conf}, index=le_y.classes_))
                 except Exception as e:
                     st.error(f"Gagal melakukan klasifikasi: {str(e)}")
             else:
-                st.error("Gagal memproses file audio.")
+                st.error("Gagal mengekstrak fitur audio.")
             
-            # Cleanup file sementara
             if os.path.exists("temp.wav"): os.remove("temp.wav")
