@@ -1,11 +1,15 @@
 import streamlit as st
 import numpy as np
+import pandas as pd
 import librosa
 import soundfile as sf
 import tensorflow as tf
 import os
 import tempfile
-from sklearn.preprocessing import LabelEncoder, OneHotEncoder, StandardScaler # Import necessary encoders/scalers
+import random
+from sklearn.preprocessing import LabelEncoder, OneHotEncoder, StandardScaler
+from sklearn.model_selection import train_test_split
+from pydub import AudioSegment # Needed for normalize_audio if used
 
 # Ensure custom objects are registered for model loading
 from tensorflow.keras.models import Model
@@ -56,6 +60,115 @@ class PrototypicalNetwork(Model):
         embedding_model = keras.saving.deserialize_keras_object(embedding_config)
         return cls(embedding_model, **config)
 
+# --- Data Loading and Preprocessing ---
+
+# Use st.cache_resource to load and preprocess data only once
+@st.cache_resource
+def load_and_preprocess_data():
+    # Define path
+    path = '/content/drive/MyDrive/Voice_Skripsi_fix'
+
+    # Load metadata
+    csv_path = os.path.join(path, 'metadata.csv')
+    metadata = pd.read_csv(csv_path)
+
+    # Feature extraction function (needs to be defined locally or passed)
+    def extract_mfcc_local(file_path, sr=22050, n_mfcc=40, max_len=174):
+        try:
+            y, sr = librosa.load(file_path, sr=sr)
+            y = librosa.util.normalize(y)
+            mfcc = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=n_mfcc, n_fft=2048, hop_length=512)
+            delta = librosa.feature.delta(mfcc)
+            delta2 = librosa.feature.delta(mfcc, order=2)
+
+            if mfcc.shape[1] < max_len:
+                pad_width = max_len - mfcc.shape[1]
+                mfcc = np.pad(mfcc, ((0, 0), (0, pad_width)), mode='constant')
+                delta = np.pad(delta, ((0, 0), (0, pad_width)), mode='constant')
+                delta2 = np.pad(delta2, ((0, 0), (0, pad_width)), mode='constant')
+            else:
+                mfcc = mfcc[:, :max_len]
+                delta = delta[:, :max_len]
+                delta2 = delta2[:, :max_len]
+
+            features = np.stack([mfcc, delta, delta2], axis=-1)
+            return features
+
+        except Exception as e:
+            st.error(f"Error extracting MFCC from {file_path}: {e}")
+            return None
+
+    # Extract features and metadata
+    X_audio_features = []
+    X_meta_raw = []
+    y_text = []
+
+    for i, row in metadata.iterrows():
+        file_name = str(row['file_name'])
+        file_path = os.path.join(path, file_name)
+
+        if not os.path.exists(file_path):
+            st.warning(f"File not found: {file_path}. Skipping.")
+            continue
+
+        mfcc_feat = extract_mfcc_local(file_path)
+        if mfcc_feat is None:
+            continue # Skip if MFCC extraction failed
+
+        X_audio_features.append(mfcc_feat)
+        X_meta_raw.append([row['usia'], row['gender'], row['provinsi']])
+        y_text.append(row['label_aksen'])
+
+    X_audio_features = np.array(X_audio_features, dtype=np.float32)
+    X_meta_raw = np.array(X_meta_raw, dtype=object)
+    y_text = np.array(y_text, dtype=str)
+
+    # Label Encoding for y_text
+    le_y = LabelEncoder()
+    y_aksen = le_y.fit_transform(y_text)
+
+    # Prepare target variables for multi-task learning and metadata processing
+    y_usia = X_meta_raw[:, 0].astype(float)
+    y_gender_raw = X_meta_raw[:, 1].astype(str)
+    y_provinsi_raw = X_meta_raw[:, 2].astype(str)
+
+    le_gender = LabelEncoder()
+    le_gender.fit(y_gender_raw) # Fit the encoder
+    y_gender = le_gender.transform(y_gender_raw)
+
+    le_provinsi = LabelEncoder()
+    le_provinsi.fit(y_provinsi_raw) # Fit the encoder
+    y_provinsi = le_provinsi.transform(y_provinsi_raw)
+
+    # Scale usia
+    scaler_usia = StandardScaler()
+    scaler_usia.fit(y_usia.reshape(-1, 1)) # Fit the scaler
+    usia_scaled = scaler_usia.transform(y_usia.reshape(-1, 1))
+
+    # One-hot for gender + provinsi
+    ohe = OneHotEncoder(handle_unknown="ignore", sparse_output=False)
+    ohe.fit(np.hstack([y_gender_raw.reshape(-1,1), y_provinsi_raw.reshape(-1,1)])) # Fit the OHE
+    cat_encoded = ohe.transform(np.hstack([y_gender_raw.reshape(-1,1), y_provinsi_raw.reshape(-1,1)]))
+
+    # Gabungkan metadata jadi satu
+    X_meta = np.hstack([usia_scaled, cat_encoded]).astype(np.float32)
+
+    X_meta_broadcast = np.repeat(X_meta[:, np.newaxis, np.newaxis, :],
+                                 X_audio_features.shape[1], axis=1)
+    X_meta_broadcast = np.repeat(X_meta_broadcast,
+                                 X_audio_features.shape[2], axis=2)
+    X_final = np.concatenate([X_audio_features, X_meta_broadcast], axis=-1).astype(np.float32)
+
+    # Split Data
+    X_train, X_test, y_train, y_test = train_test_split(
+        X_final, y_aksen, test_size=0.2, random_state=42, stratify=y_aksen
+    )
+    # Return all necessary components
+    return le_y, scaler_usia, le_gender, le_provinsi, ohe, X_train, y_train, extract_mfcc_local
+
+# Load all data and preprocessing objects
+le_y, scaler_usia, le_gender, le_provinsi, ohe, X_train, y_train, extract_mfcc_func = load_and_preprocess_data()
+
 # Load the trained model
 model_path = "model_aksen.keras"
 
@@ -72,49 +185,16 @@ def load_my_model(model_path):
 
 pn_model = load_my_model(model_path)
 
-
-# Feature extraction function (copied from notebook)
-def extract_mfcc(file_path, sr=22050, n_mfcc=40, max_len=174):
-    try:
-        y, sr = librosa.load(file_path, sr=sr)
-        y = librosa.util.normalize(y)
-        mfcc = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=n_mfcc, n_fft=2048, hop_length=512)
-        delta = librosa.feature.delta(mfcc)
-        delta2 = librosa.feature.delta(mfcc, order=2)
-
-        if mfcc.shape[1] < max_len:
-            pad_width = max_len - mfcc.shape[1]
-            mfcc = np.pad(mfcc, ((0, 0), (0, pad_width)), mode='constant')
-            delta = np.pad(delta, ((0, 0), (0, pad_width)), mode='constant')
-            delta2 = np.pad(delta2, ((0, 0), (0, pad_width)), mode='constant')
-        else:
-            mfcc = mfcc[:, :max_len]
-            delta = delta[:, :max_len]
-            delta2 = delta2[:, :max_len]
-
-        features = np.stack([mfcc, delta, delta2], axis=-1)
-        return features
-
-    except Exception as e:
-        st.error(f"Error extracting MFCC from {file_path}: {e}")
-        return None
-
-# Function to prepare audio for prediction
+# Function to prepare audio for prediction (now uses `extract_mfcc_func` from cached data)
 def process_audio_for_prediction(audio_file_path, user_usia, user_gender, user_provinsi):
-    mfcc_features = extract_mfcc(audio_file_path)
+    mfcc_features = extract_mfcc_func(audio_file_path) # Use the cached function
     if mfcc_features is None:
         return None
 
     # Scale user usia
     user_usia_scaled = scaler_usia.transform(np.array([[user_usia]]))
 
-    # Encode user gender and provinsi
-    # user_gender_encoded = le_gender.transform([user_gender]) # Not directly used for OHE here
-    # user_provinsi_encoded = le_provinsi.transform([user_provinsi]) # Not directly used for OHE here
-
     # One-hot encode combined metadata (gender and provinsi)
-    # The ohe was fitted on np.hstack([y_gender_raw.reshape(-1,1), y_provinsi_raw.reshape(-1,1)])
-    # So we need to create a similar structure for transform
     user_meta_for_ohe = np.array([[user_gender, user_provinsi]])
     user_cat_encoded = ohe.transform(user_meta_for_ohe)
 
@@ -132,13 +212,8 @@ def process_audio_for_prediction(audio_file_path, user_usia, user_gender, user_p
     X_final_pred = np.concatenate([mfcc_features, X_meta_broadcast], axis=-1).astype(np.float32)
     return X_final_pred
 
-# Access global variables for encoders and scalers
-# This assumes the notebook cells defining these objects have been executed.
-# In a standalone Streamlit app, you would need to load/re-initialize these.
-global le_y, scaler_usia, le_gender, le_provinsi, ohe, X_train, y_train
-
-if 'X_train' in locals() and 'y_train' in locals() and 'le_y' in locals() and pn_model is not None and \
-   'scaler_usia' in locals() and 'le_gender' in locals() and 'le_provinsi' in locals() and 'ohe' in locals():
+# Pre-compute prototypes for each accent class from training data
+if pn_model is not None and X_train is not None and y_train is not None and le_y is not None:
     st.write("Pre-computing class prototypes...")
     train_embeddings = pn_model.embedding(X_train)
     class_prototypes = []
@@ -155,7 +230,7 @@ if 'X_train' in locals() and 'y_train' in locals() and 'le_y' in locals() and pn
     class_prototypes = tf.stack(class_prototypes)
     st.success("Class prototypes computed.")
 else:
-    st.error("Required training data or model components (X_train, y_train, le_y, scaler_usia, le_gender, le_provinsi, ohe, pn_model) not found in context. Please ensure all previous cells are run.")
+    st.error("Model (pn_model) or training data (X_train, y_train, le_y) not available. Cannot compute prototypes.")
     st.stop()
 
 
@@ -218,4 +293,3 @@ if uploaded_file is not None:
 
     # Clean up the temporary file
     os.remove(audio_file_path)
-
