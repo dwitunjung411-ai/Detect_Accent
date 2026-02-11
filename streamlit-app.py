@@ -9,7 +9,6 @@ import tempfile
 import random
 from sklearn.preprocessing import LabelEncoder, OneHotEncoder, StandardScaler
 from sklearn.model_selection import train_test_split
-from pydub import AudioSegment # Needed for normalize_audio if used
 
 # Ensure custom objects are registered for model loading
 from tensorflow.keras.models import Model
@@ -293,3 +292,4 @@ if uploaded_file is not None:
 
     # Clean up the temporary file
     os.remove(audio_file_path)
+
