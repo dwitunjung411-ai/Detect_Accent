@@ -2,9 +2,12 @@ import streamlit as st
 import numpy as np
 import librosa
 import soundfile as sf
+import matplotlib.pyplot as plt
+import librosa.display
 import tensorflow as tf
 import os
 import tempfile
+from sklearn.preprocessing import LabelEncoder, OneHotEncoder, StandardScaler # Import necessary encoders/scalers
 
 # Ensure custom objects are registered for model loading
 from tensorflow.keras.models import Model
@@ -99,14 +102,29 @@ def extract_mfcc(file_path, sr=22050, n_mfcc=40, max_len=174):
         return None
 
 # Function to prepare audio for prediction
-def process_audio_for_prediction(audio_file_path, metadata_input):
+def process_audio_for_prediction(audio_file_path, user_usia, user_gender, user_provinsi):
     mfcc_features = extract_mfcc(audio_file_path)
     if mfcc_features is None:
         return None
-    dummy_X_meta = np.zeros((1, 8), dtype=np.float32) # Replace with actual metadata if available
+
+    # Scale user usia
+    user_usia_scaled = scaler_usia.transform(np.array([[user_usia]]))
+
+    # Encode user gender and provinsi
+    # user_gender_encoded = le_gender.transform([user_gender]) # Not directly used for OHE here
+    # user_provinsi_encoded = le_provinsi.transform([user_provinsi]) # Not directly used for OHE here
+
+    # One-hot encode combined metadata (gender and provinsi)
+    # The ohe was fitted on np.hstack([y_gender_raw.reshape(-1,1), y_provinsi_raw.reshape(-1,1)])
+    # So we need to create a similar structure for transform
+    user_meta_for_ohe = np.array([[user_gender, user_provinsi]])
+    user_cat_encoded = ohe.transform(user_meta_for_ohe)
+
+    # Combine all metadata features
+    user_X_meta = np.hstack([user_usia_scaled, user_cat_encoded]).astype(np.float32)
 
     mfcc_features = np.expand_dims(mfcc_features, axis=0) # Add batch dimension
-    X_meta_broadcast = np.repeat(dummy_X_meta[:, np.newaxis, np.newaxis, :],
+    X_meta_broadcast = np.repeat(user_X_meta[:, np.newaxis, np.newaxis, :],
                                  mfcc_features.shape[1],
                                  axis=1)
     X_meta_broadcast = np.repeat(X_meta_broadcast,
@@ -116,11 +134,13 @@ def process_audio_for_prediction(audio_file_path, metadata_input):
     X_final_pred = np.concatenate([mfcc_features, X_meta_broadcast], axis=-1).astype(np.float32)
     return X_final_pred
 
-# Pre-compute prototypes for each accent class from training data
-# This assumes X_train and y_train are available from the notebook's execution context.
-# If running as a standalone script, you'd need to load or re-create these.
+# Access global variables for encoders and scalers
+# This assumes the notebook cells defining these objects have been executed.
+# In a standalone Streamlit app, you would need to load/re-initialize these.
+global le_y, scaler_usia, le_gender, le_provinsi, ohe, X_train, y_train
 
-if 'X_train' in locals() and 'y_train' in locals() and 'le_y' in locals() and pn_model is not None:
+if 'X_train' in locals() and 'y_train' in locals() and 'le_y' in locals() and pn_model is not None and \
+   'scaler_usia' in locals() and 'le_gender' in locals() and 'le_provinsi' in locals() and 'ohe' in locals():
     st.write("Pre-computing class prototypes...")
     train_embeddings = pn_model.embedding(X_train)
     class_prototypes = []
@@ -137,14 +157,20 @@ if 'X_train' in locals() and 'y_train' in locals() and 'le_y' in locals() and pn
     class_prototypes = tf.stack(class_prototypes)
     st.success("Class prototypes computed.")
 else:
-    st.error("Training data (X_train, y_train, le_y) or model not found in context. Cannot compute prototypes.")
+    st.error("Required training data or model components (X_train, y_train, le_y, scaler_usia, le_gender, le_provinsi, ohe, pn_model) not found in context. Please ensure all previous cells are run.")
     st.stop()
 
 
 # Streamlit UI
 st.set_page_config(layout="wide")
 st.title("Voice Accent Classification")
-st.write("Upload an audio file to predict the accent.")
+st.write("Upload an audio file and provide metadata to predict the accent.")
+
+# Metadata Inputs
+st.sidebar.header("User Metadata")
+user_usia = st.sidebar.slider("Usia (Age)", min_value=10, max_value=80, value=30)
+user_gender = st.sidebar.selectbox("Jenis Kelamin (Gender)", options=le_gender.classes_.tolist())
+user_provinsi = st.sidebar.selectbox("Provinsi Asal (Origin Province)", options=le_provinsi.classes_.tolist())
 
 uploaded_file = st.file_uploader("Choose a WAV audio file", type=["wav"])
 
@@ -155,10 +181,8 @@ if uploaded_file is not None:
 
     st.audio(audio_file_path, format='audio/wav')
 
-    st.subheader("Processing Audio...")
-    # For the UI, we're not asking for metadata explicitly for this prediction demo.
-    # The process_audio_for_prediction uses a dummy metadata_input.
-    processed_audio_input = process_audio_for_prediction(audio_file_path, metadata_input=None)
+    st.subheader("Processing Audio and Metadata...")
+    processed_audio_input = process_audio_for_prediction(audio_file_path, user_usia, user_gender, user_provinsi)
 
     if processed_audio_input is not None:
         # Display Spectrogram
@@ -186,7 +210,9 @@ if uploaded_file is not None:
             predicted_class_idx = tf.argmin(distances).numpy()
             predicted_accent = le_y.inverse_transform([predicted_class_idx])[0]
 
-            st.success(f"Predicted Accent: **{predicted_accent}**")
+            st.success(f"Predicted Accent (label_aksen): **{predicted_accent}**")
+            st.info(f"**Note:** The current model is primarily trained for accent classification. Prediction for 'Usia', 'Gender', and 'Provinsi' would require a dedicated multi-task learning model and retraining. The metadata provided is incorporated into the input features, but its direct impact on specific predictions for 'Usia', 'Gender', and 'Provinsi' is not explicitly modeled in this prototypical network.")
+
         else:
             st.warning("Model or prototypes not available for prediction.")
     else:
@@ -194,4 +220,3 @@ if uploaded_file is not None:
 
     # Clean up the temporary file
     os.remove(audio_file_path)
-
