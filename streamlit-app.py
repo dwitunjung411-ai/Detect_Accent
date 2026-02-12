@@ -90,7 +90,7 @@ def main():
 
     # Tampilan Hasil Utama
     if 'last_result' in st.session_state:
-        st.success(f"### Hasil Prediksi: {st.session_state['last_result']}")
+        st.success(f"### Hasil Deteksi Aksen: {st.session_state['last_result']}")
         
         # Tampilkan info tambahan jika ada di metadata
         if df_metadata is not None:
@@ -103,3 +103,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
